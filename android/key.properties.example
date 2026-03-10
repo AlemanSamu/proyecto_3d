@@ -1,0 +1,7 @@
+# Copy this file to android/key.properties and replace with your real values.
+# You can also set these keys as environment variables in CI.
+
+storeFile=../keystore/upload-keystore.jks
+storePassword=CHANGE_ME
+keyAlias=upload
+keyPassword=CHANGE_ME
