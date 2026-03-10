@@ -35,7 +35,32 @@ class HistoryScreen extends ConsumerWidget {
                     trailing: IconButton(
                       tooltip: 'Eliminar',
                       icon: const Icon(Icons.delete_outline),
-                      onPressed: () => notifier.deleteProject(project.id),
+                      onPressed: () async {
+                        final confirm = await showDialog<bool>(
+                          context: context,
+                          builder: (ctx) => AlertDialog(
+                            title: const Text('Eliminar proyecto'),
+                            content: Text(
+                              'Se eliminaran ${project.imagePaths.length} capturas de "${project.name}". Esta accion no se puede deshacer.',
+                            ),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.of(ctx).pop(false),
+                                child: const Text('Cancelar'),
+                              ),
+                              FilledButton(
+                                onPressed: () => Navigator.of(ctx).pop(true),
+                                child: const Text('Eliminar'),
+                              ),
+                            ],
+                          ),
+                        );
+                        if (confirm != true || !context.mounted) return;
+                        notifier.deleteProject(project.id);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Proyecto eliminado.')),
+                        );
+                      },
                     ),
                   ),
                 );

@@ -10,6 +10,7 @@ abstract class ProjectCaptureStorage {
   });
 
   Future<void> deleteIfExists(String path);
+  Future<void> deleteProjectData(String projectId);
 }
 
 class LocalProjectCaptureStorage implements ProjectCaptureStorage {
@@ -23,11 +24,7 @@ class LocalProjectCaptureStorage implements ProjectCaptureStorage {
     required String sourcePath,
   }) async {
     try {
-      final docsDir = await getApplicationDocumentsDirectory();
-      final projectDir = Directory(
-        '${docsDir.path}${Platform.pathSeparator}captures'
-        '${Platform.pathSeparator}$projectId',
-      );
+      final projectDir = await _projectDirectory(projectId);
 
       if (!await projectDir.exists()) {
         await projectDir.create(recursive: true);
@@ -63,6 +60,18 @@ class LocalProjectCaptureStorage implements ProjectCaptureStorage {
 
       final thumb = File(thumbnailPathFor(path));
       if (await thumb.exists()) await thumb.delete();
+    } catch (_) {
+      // best effort cleanup
+    }
+  }
+
+  @override
+  Future<void> deleteProjectData(String projectId) async {
+    try {
+      final projectDir = await _projectDirectory(projectId);
+      if (await projectDir.exists()) {
+        await projectDir.delete(recursive: true);
+      }
     } catch (_) {
       // best effort cleanup
     }
@@ -114,5 +123,13 @@ class LocalProjectCaptureStorage implements ProjectCaptureStorage {
     } catch (_) {
       // Thumbnail is optional, do not fail main flow.
     }
+  }
+
+  Future<Directory> _projectDirectory(String projectId) async {
+    final docsDir = await getApplicationDocumentsDirectory();
+    return Directory(
+      '${docsDir.path}${Platform.pathSeparator}captures'
+      '${Platform.pathSeparator}$projectId',
+    );
   }
 }

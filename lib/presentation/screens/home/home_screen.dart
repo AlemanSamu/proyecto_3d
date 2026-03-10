@@ -57,10 +57,37 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     ];
   }
 
+  Future<void> _confirmAndDeleteProject(ProjectModel project) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Eliminar proyecto'),
+        content: Text(
+          'Se eliminaran ${project.imagePaths.length} capturas de "${project.name}". Esta accion no se puede deshacer.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Eliminar'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true || !mounted) return;
+    ref.read(projectsProvider.notifier).deleteProject(project.id);
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Proyecto eliminado.')));
+  }
+
   @override
   Widget build(BuildContext context) {
     final projects = ref.watch(projectsProvider);
-    final notifier = ref.read(projectsProvider.notifier);
 
     final orderedProjects = [...projects]
       ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
@@ -114,7 +141,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               _SettingsTab(
                 projects: orderedProjects,
                 onOpenCapture: _openCapture,
-                onDeleteProject: notifier.deleteProject,
+                onDeleteProject: _confirmAndDeleteProject,
                 formatDate: _formatDate,
               ),
             ],
@@ -163,7 +190,7 @@ class _HomeTab extends StatelessWidget {
               child: Column(
                 children: [
                   Text(
-                    'NombreAPP',
+                    'Captura 3D',
                     textAlign: TextAlign.center,
                     style: theme.textTheme.titleLarge?.copyWith(fontSize: 36),
                   ),
@@ -356,7 +383,7 @@ class _SettingsTab extends StatelessWidget {
 
   final List<ProjectModel> projects;
   final VoidCallback onOpenCapture;
-  final ValueChanged<String> onDeleteProject;
+  final Future<void> Function(ProjectModel) onDeleteProject;
   final String Function(DateTime) formatDate;
 
   @override
@@ -464,7 +491,7 @@ class _SettingsTab extends StatelessWidget {
                     ),
                     IconButton(
                       tooltip: 'Eliminar',
-                      onPressed: () => onDeleteProject(project.id),
+                      onPressed: () async => onDeleteProject(project),
                       icon: const Icon(Icons.delete_outline_rounded),
                     ),
                   ],

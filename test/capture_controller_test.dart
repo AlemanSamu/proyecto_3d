@@ -1,298 +1,195 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:proyecto_3d/features/capture/capture_controller.dart';
-import 'package:proyecto_3d/features/capture/pose_library.dart';
-import 'package:proyecto_3d/features/capture/quality_analyzer.dart';
+import 'package:proyecto_3d/core/services/camera_permission_service.dart';
+import 'package:proyecto_3d/data/capture/camera_capture_service.dart';
+import 'package:proyecto_3d/data/capture/gallery_save_service.dart';
+import 'package:proyecto_3d/data/capture/photo_quality_analyzer.dart';
+import 'package:proyecto_3d/data/capture/project_capture_storage.dart';
+import 'package:proyecto_3d/data/projects/project_repository.dart';
+import 'package:proyecto_3d/domain/capture/photo_quality_report.dart';
+import 'package:proyecto_3d/domain/projects/project_model.dart';
+import 'package:proyecto_3d/presentation/controllers/capture_flow_controller.dart';
+import 'package:proyecto_3d/presentation/providers/project_providers.dart';
 
-const _samplePose = PoseStep(
-  id: 'mid_0',
-  title: 'Pose media',
-  level: PoseLevel.mid,
-  angleDeg: 0,
-  instruction: 'Instruccion',
-);
-
-class FakeCapturePermissions implements CapturePermissions {
-  FakeCapturePermissions(this.allowed);
-  final bool allowed;
-  int calls = 0;
+class InMemoryProjectRepository implements ProjectRepository {
+  List<ProjectModel> _projects = const [];
 
   @override
-  Future<bool> ensureCapturePermissions() async {
-    calls++;
-    return allowed;
+  Future<List<ProjectModel>> readProjects() async {
+    return List<ProjectModel>.from(_projects);
+  }
+
+  @override
+  Future<void> writeProjects(List<ProjectModel> projects) async {
+    _projects = List<ProjectModel>.from(projects);
   }
 }
 
-class FakeCaptureCamera implements CaptureCamera {
-  FakeCaptureCamera({this.path});
-  final String? path;
-  int calls = 0;
+class FakePermissionService extends CameraPermissionService {
+  FakePermissionService(this.nextState);
+  CameraPermissionState nextState;
 
   @override
-  Future<String?> takePhotoPath() async {
-    calls++;
-    return path;
-  }
+  Future<CameraPermissionState> request() async => nextState;
 }
 
-class FakeCaptureQualityAnalyzer implements CaptureQualityAnalyzer {
-  FakeCaptureQualityAnalyzer(this.report);
-  final QualityReport report;
+class FakeCameraService implements CameraCaptureService {
+  FakeCameraService(this.path);
+  String? path;
+
+  @override
+  Future<String?> capturePhotoPath() async => path;
+}
+
+class FakeQualityAnalyzer implements PhotoQualityAnalyzer {
+  FakeQualityAnalyzer(this.report);
+  PhotoQualityReport report;
   int calls = 0;
 
   @override
-  Future<QualityReport> analyze(String filePath) async {
+  Future<PhotoQualityReport> analyze(String sourcePath) async {
     calls++;
     return report;
   }
 }
 
-class FakeCaptureFileStorage implements CaptureFileStorage {
-  FakeCaptureFileStorage({this.pathToStore});
-  final String? pathToStore;
-  int storeCalls = 0;
-  String? deletedPath;
+class FakeStorage implements ProjectCaptureStorage {
+  FakeStorage(this.copiedPath);
+  String? copiedPath;
+  final List<String> deletedPaths = <String>[];
 
   @override
-  Future<void> deleteIfExists(String? path) async {
-    deletedPath = path;
-  }
-
-  @override
-  Future<String?> storeCapture({
+  Future<String?> copyToProject({
     required String projectId,
     required String sourcePath,
-    required String poseId,
-  }) async {
-    storeCalls++;
-    return pathToStore;
-  }
-}
-
-class FakeCaptureGallerySaver implements CaptureGallerySaver {
-  FakeCaptureGallerySaver(this.willSave);
-  final bool willSave;
-  int calls = 0;
-  String? lastPath;
+  }) async => copiedPath;
 
   @override
-  Future<bool> save(String path) async {
-    calls++;
-    lastPath = path;
-    return willSave;
-  }
-}
-
-class FakeCaptureProjectStore implements CaptureProjectStore {
-  int setCalls = 0;
-  int removeCalls = 0;
-  String? setProjectId;
-  String? setPoseId;
-  String? setPath;
-  String? removedProjectId;
-  String? removedPoseId;
-
-  @override
-  void removePosePhoto(String projectId, String poseId) {
-    removeCalls++;
-    removedProjectId = projectId;
-    removedPoseId = poseId;
+  Future<void> deleteIfExists(String path) async {
+    deletedPaths.add(path);
   }
 
   @override
-  void setPosePhoto(String projectId, String poseId, String path) {
-    setCalls++;
-    setProjectId = projectId;
-    setPoseId = poseId;
-    setPath = path;
-  }
+  Future<void> deleteProjectData(String projectId) async {}
 }
 
-CaptureController _buildController({
-  required FakeCapturePermissions permissions,
-  required FakeCaptureCamera camera,
-  required FakeCaptureQualityAnalyzer analyzer,
-  required FakeCaptureFileStorage files,
-  required FakeCaptureGallerySaver gallery,
-  required FakeCaptureProjectStore projects,
+class FakeGalleryService implements GallerySaveService {
+  FakeGalleryService(this.saved);
+  bool saved;
+
+  @override
+  Future<bool> saveImage(String imagePath) async => saved;
+}
+
+CaptureFlowController _buildController({
+  required CameraPermissionState permission,
+  required String? cameraPath,
+  required PhotoQualityReport report,
+  required FakeStorage storage,
+  required bool gallerySaved,
+  required ProjectsNotifier notifier,
+  FakeQualityAnalyzer? analyzer,
 }) {
-  return CaptureController(
-    projectId: 'project-1',
-    permissions: permissions,
-    camera: camera,
-    qualityAnalyzer: analyzer,
-    fileStorage: files,
-    gallerySaver: gallery,
-    projectStore: projects,
+  final qualityAnalyzer = analyzer ?? FakeQualityAnalyzer(report);
+  return CaptureFlowController(
+    permissionService: FakePermissionService(permission),
+    cameraService: FakeCameraService(cameraPath),
+    qualityAnalyzer: qualityAnalyzer,
+    storage: storage,
+    gallerySaver: FakeGalleryService(gallerySaved),
+    projectsNotifier: notifier,
   );
 }
 
 void main() {
-  test('retorna mensaje cuando faltan permisos', () async {
-    final permissions = FakeCapturePermissions(false);
-    final camera = FakeCaptureCamera(path: '/tmp/camera.jpg');
-    final analyzer = FakeCaptureQualityAnalyzer(
-      const QualityReport(
+  test('marca guardado en app cuando falla guardar en galeria', () async {
+    final notifier = ProjectsNotifier(InMemoryProjectRepository());
+    final project = notifier.createProject();
+    final storage = FakeStorage('/tmp/output.jpg');
+    final controller = _buildController(
+      permission: CameraPermissionState.granted,
+      cameraPath: '/tmp/input.jpg',
+      report: const PhotoQualityReport(
         isOk: true,
-        brightness: 80,
+        brightness: 90,
         sharpness: 20,
         hint: 'ok',
       ),
-    );
-    final files = FakeCaptureFileStorage(pathToStore: '/tmp/saved.jpg');
-    final gallery = FakeCaptureGallerySaver(true);
-    final projects = FakeCaptureProjectStore();
-    final controller = _buildController(
-      permissions: permissions,
-      camera: camera,
-      analyzer: analyzer,
-      files: files,
-      gallery: gallery,
-      projects: projects,
+      storage: storage,
+      gallerySaved: false,
+      notifier: notifier,
     );
 
-    final result = await controller.takeForPose(
-      pose: _samplePose,
-      confirmLowQuality: (_) async => true,
+    final result = await controller.captureForProject(
+      projectId: project.id,
+      autoQuality: true,
+      confirmLowQualitySave: (_) async => true,
     );
 
-    expect(result.message, 'Necesito permisos de camara y fotos.');
-    expect(camera.calls, 0);
-    expect(projects.setCalls, 0);
+    expect(result.message, 'Imagen guardada en proyecto, pero no en galeria.');
+    expect(result.saved, isTrue);
+    expect(notifier.state.first.imagePaths, ['/tmp/output.jpg']);
   });
 
-  test('cancela cuando calidad baja no es aceptada', () async {
-    final permissions = FakeCapturePermissions(true);
-    final camera = FakeCaptureCamera(path: '/tmp/camera.jpg');
-    final analyzer = FakeCaptureQualityAnalyzer(
-      const QualityReport(
+  test('processCapturedFile evita analisis si autoQuality es false', () async {
+    final notifier = ProjectsNotifier(InMemoryProjectRepository());
+    final project = notifier.createProject();
+    final analyzer = FakeQualityAnalyzer(
+      const PhotoQualityReport(
         isOk: false,
-        brightness: 20,
-        sharpness: 5,
+        brightness: 10,
+        sharpness: 2,
         hint: 'baja',
       ),
     );
-    final files = FakeCaptureFileStorage(pathToStore: '/tmp/saved.jpg');
-    final gallery = FakeCaptureGallerySaver(true);
-    final projects = FakeCaptureProjectStore();
+    final storage = FakeStorage('/tmp/output.jpg');
     final controller = _buildController(
-      permissions: permissions,
-      camera: camera,
+      permission: CameraPermissionState.granted,
+      cameraPath: '/tmp/input.jpg',
+      report: analyzer.report,
+      storage: storage,
+      gallerySaved: true,
+      notifier: notifier,
       analyzer: analyzer,
-      files: files,
-      gallery: gallery,
-      projects: projects,
     );
 
-    final result = await controller.takeForPose(
-      pose: _samplePose,
-      confirmLowQuality: (_) async => false,
+    final result = await controller.processCapturedFile(
+      projectId: project.id,
+      sourcePath: '/tmp/input.jpg',
+      autoQuality: false,
+      confirmLowQualitySave: (_) async => false,
     );
 
-    expect(result.message, isNull);
-    expect(files.storeCalls, 0);
-    expect(projects.setCalls, 0);
+    expect(analyzer.calls, 0);
+    expect(result.saved, isTrue);
+    expect(notifier.state.first.imagePaths, ['/tmp/output.jpg']);
   });
 
-  test('guarda proyecto y galeria cuando todo sale bien', () async {
-    final permissions = FakeCapturePermissions(true);
-    final camera = FakeCaptureCamera(path: '/tmp/camera.jpg');
-    final analyzer = FakeCaptureQualityAnalyzer(
-      const QualityReport(
+  test('removeImage limpia storage y estado del proyecto', () async {
+    final notifier = ProjectsNotifier(InMemoryProjectRepository());
+    final project = notifier.createProject();
+    notifier.addImagePath(project.id, '/tmp/output.jpg');
+
+    final storage = FakeStorage('/tmp/output.jpg');
+    final controller = _buildController(
+      permission: CameraPermissionState.granted,
+      cameraPath: '/tmp/input.jpg',
+      report: const PhotoQualityReport(
         isOk: true,
         brightness: 90,
-        sharpness: 30,
+        sharpness: 20,
         hint: 'ok',
       ),
-    );
-    final files = FakeCaptureFileStorage(pathToStore: '/tmp/saved.jpg');
-    final gallery = FakeCaptureGallerySaver(true);
-    final projects = FakeCaptureProjectStore();
-    final controller = _buildController(
-      permissions: permissions,
-      camera: camera,
-      analyzer: analyzer,
-      files: files,
-      gallery: gallery,
-      projects: projects,
+      storage: storage,
+      gallerySaved: true,
+      notifier: notifier,
     );
 
-    final result = await controller.takeForPose(
-      pose: _samplePose,
-      confirmLowQuality: (_) async => true,
+    await controller.removeImage(
+      projectId: project.id,
+      imagePath: '/tmp/output.jpg',
     );
 
-    expect(result.message, 'Foto guardada.');
-    expect(projects.setCalls, 1);
-    expect(projects.setProjectId, 'project-1');
-    expect(projects.setPoseId, 'mid_0');
-    expect(projects.setPath, '/tmp/saved.jpg');
-    expect(gallery.calls, 1);
-  });
-
-  test('reporta guardado solo en app cuando falla galeria', () async {
-    final permissions = FakeCapturePermissions(true);
-    final camera = FakeCaptureCamera(path: '/tmp/camera.jpg');
-    final analyzer = FakeCaptureQualityAnalyzer(
-      const QualityReport(
-        isOk: true,
-        brightness: 90,
-        sharpness: 30,
-        hint: 'ok',
-      ),
-    );
-    final files = FakeCaptureFileStorage(pathToStore: '/tmp/saved.jpg');
-    final gallery = FakeCaptureGallerySaver(false);
-    final projects = FakeCaptureProjectStore();
-    final controller = _buildController(
-      permissions: permissions,
-      camera: camera,
-      analyzer: analyzer,
-      files: files,
-      gallery: gallery,
-      projects: projects,
-    );
-
-    final result = await controller.takeForPose(
-      pose: _samplePose,
-      confirmLowQuality: (_) async => true,
-    );
-
-    expect(result.message, 'Foto guardada en app, pero no en galeria.');
-    expect(projects.setCalls, 1);
-  });
-
-  test('eliminacion de pose limpia archivo y store', () async {
-    final permissions = FakeCapturePermissions(true);
-    final camera = FakeCaptureCamera(path: '/tmp/camera.jpg');
-    final analyzer = FakeCaptureQualityAnalyzer(
-      const QualityReport(
-        isOk: true,
-        brightness: 90,
-        sharpness: 30,
-        hint: 'ok',
-      ),
-    );
-    final files = FakeCaptureFileStorage(pathToStore: '/tmp/saved.jpg');
-    final gallery = FakeCaptureGallerySaver(true);
-    final projects = FakeCaptureProjectStore();
-    final controller = _buildController(
-      permissions: permissions,
-      camera: camera,
-      analyzer: analyzer,
-      files: files,
-      gallery: gallery,
-      projects: projects,
-    );
-
-    await controller.removePosePhoto(
-      poseId: 'mid_0',
-      filePath: '/tmp/saved.jpg',
-    );
-
-    expect(files.deletedPath, '/tmp/saved.jpg');
-    expect(projects.removeCalls, 1);
-    expect(projects.removedProjectId, 'project-1');
-    expect(projects.removedPoseId, 'mid_0');
+    expect(storage.deletedPaths, ['/tmp/output.jpg']);
+    expect(notifier.state.first.imagePaths, isEmpty);
   });
 }

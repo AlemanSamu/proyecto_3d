@@ -9,8 +9,13 @@ import '../providers/project_providers.dart';
 class CaptureFlowResult {
   final String? message;
   final bool shouldOpenSettings;
+  final bool saved;
 
-  const CaptureFlowResult({this.message, this.shouldOpenSettings = false});
+  const CaptureFlowResult({
+    this.message,
+    this.shouldOpenSettings = false,
+    this.saved = false,
+  });
 }
 
 class CaptureFlowController {
@@ -102,10 +107,14 @@ class CaptureFlowController {
     if (!savedToGallery) {
       return const CaptureFlowResult(
         message: 'Imagen guardada en proyecto, pero no en galeria.',
+        saved: true,
       );
     }
 
-    return const CaptureFlowResult(message: 'Imagen capturada y guardada.');
+    return const CaptureFlowResult(
+      message: 'Imagen capturada y guardada.',
+      saved: true,
+    );
   }
 
   Future<void> removeImage({

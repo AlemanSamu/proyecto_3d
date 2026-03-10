@@ -60,6 +60,9 @@ class FakeStorage implements ProjectCaptureStorage {
 
   @override
   Future<void> deleteIfExists(String path) async {}
+
+  @override
+  Future<void> deleteProjectData(String projectId) async {}
 }
 
 class FakeGalleryService implements GallerySaveService {
@@ -113,6 +116,7 @@ void main() {
     );
 
     expect(result.shouldOpenSettings, isTrue);
+    expect(result.saved, isFalse);
     expect(result.message, contains('bloqueado'));
   });
 
@@ -140,6 +144,7 @@ void main() {
     );
 
     expect(result.message, 'Captura descartada.');
+    expect(result.saved, isFalse);
     expect(notifier.state.first.imagePaths, isEmpty);
   });
 
@@ -167,6 +172,7 @@ void main() {
     );
 
     expect(result.message, 'Imagen capturada y guardada.');
+    expect(result.saved, isTrue);
     expect(notifier.state.first.imagePaths, ['/tmp/output.jpg']);
   });
 }

@@ -11,6 +11,7 @@ import '../../../data/capture/project_capture_storage.dart';
 import '../../../domain/projects/project_model.dart';
 import '../../controllers/capture_flow_controller.dart';
 import '../../providers/project_providers.dart';
+import 'capture_guide_plan.dart';
 import 'guided_camera_screen.dart';
 
 class CaptureScreen extends ConsumerStatefulWidget {
@@ -23,7 +24,8 @@ class CaptureScreen extends ConsumerStatefulWidget {
 class _CaptureScreenState extends ConsumerState<CaptureScreen> {
   static const _targetMinPhotos = 24;
   static const _targetMaxPhotos = 48;
-  static final List<CaptureGuideStep> _guidePlan = _buildGuidePlan();
+  static final List<CaptureGuideStep> _guidePlan =
+      CaptureGuidePlan.alternating24;
 
   final _permissionService = CameraPermissionService();
   late final CaptureFlowController _captureController;
@@ -119,8 +121,8 @@ class _CaptureScreenState extends ConsumerState<CaptureScreen> {
                 captureIndex: captureCount,
                 targetMinPhotos: _targetMinPhotos,
                 targetMaxPhotos: _targetMaxPhotos,
-                levelKey: nextStep.levelKey,
-                levelLabel: nextStep.levelLabel,
+                levelKey: nextStep.level.key,
+                levelLabel: nextStep.level.label,
                 angleDeg: nextStep.angleDeg,
                 requireLiveQualityGate: _enforceLiveQuality,
               ),
@@ -142,9 +144,7 @@ class _CaptureScreenState extends ConsumerState<CaptureScreen> {
         if (result.message != null) {
           lastMessage = result.message;
         }
-        if (result.message == 'Imagen capturada y guardada.' ||
-            result.message ==
-                'Imagen guardada en proyecto, pero no en galeria.') {
+        if (result.saved) {
           savedCount++;
         }
       }
@@ -270,7 +270,7 @@ class _CaptureScreenState extends ConsumerState<CaptureScreen> {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      'Siguiente toma: ${nextStep.levelLabel} - ${nextStep.angleDeg} deg',
+                      'Siguiente toma: ${nextStep.level.label} - ${nextStep.angleDeg} deg',
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: Colors.white,
                       ),
@@ -484,45 +484,6 @@ class _CaptureScreenState extends ConsumerState<CaptureScreen> {
     }
     return fallback;
   }
-
-  static List<CaptureGuideStep> _buildGuidePlan() {
-    final plan = <CaptureGuideStep>[];
-    for (int angle = 0; angle < 360; angle += 30) {
-      plan.add(
-        CaptureGuideStep(levelKey: 'mid', levelLabel: 'Media', angleDeg: angle),
-      );
-      if (angle % 60 == 0) {
-        plan.add(
-          CaptureGuideStep(
-            levelKey: 'top',
-            levelLabel: 'Alta',
-            angleDeg: angle,
-          ),
-        );
-      } else {
-        plan.add(
-          CaptureGuideStep(
-            levelKey: 'low',
-            levelLabel: 'Baja',
-            angleDeg: angle,
-          ),
-        );
-      }
-    }
-    return plan;
-  }
-}
-
-class CaptureGuideStep {
-  const CaptureGuideStep({
-    required this.levelKey,
-    required this.levelLabel,
-    required this.angleDeg,
-  });
-
-  final String levelKey;
-  final String levelLabel;
-  final int angleDeg;
 }
 
 class _CaptureHeader extends StatelessWidget {
@@ -542,7 +503,7 @@ class _CaptureHeader extends StatelessWidget {
         Expanded(
           child: Center(
             child: Text(
-              'Módulo de captura',
+              'Modulo de captura',
               style: Theme.of(context).textTheme.titleLarge,
             ),
           ),

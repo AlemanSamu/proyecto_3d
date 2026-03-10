@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../data/capture/project_capture_storage.dart';
 import '../../data/projects/local_project_repository.dart';
 import '../../data/projects/project_repository.dart';
 import '../../domain/projects/project_model.dart';
@@ -9,17 +12,29 @@ final projectRepositoryProvider = Provider<ProjectRepository>((ref) {
   return LocalProjectRepository();
 });
 
+final projectCaptureStorageProvider = Provider<ProjectCaptureStorage>((ref) {
+  return LocalProjectCaptureStorage();
+});
+
 final projectsProvider =
     StateNotifierProvider<ProjectsNotifier, List<ProjectModel>>((ref) {
-      final notifier = ProjectsNotifier(ref.read(projectRepositoryProvider));
+      final notifier = ProjectsNotifier(
+        ref.read(projectRepositoryProvider),
+        captureStorage: ref.read(projectCaptureStorageProvider),
+      );
       notifier.load();
       return notifier;
     });
 
 class ProjectsNotifier extends StateNotifier<List<ProjectModel>> {
-  ProjectsNotifier(this._repository) : super(const []);
+  ProjectsNotifier(
+    this._repository, {
+    ProjectCaptureStorage? captureStorage,
+  }) : _captureStorage = captureStorage ?? LocalProjectCaptureStorage(),
+       super(const []);
 
   final ProjectRepository _repository;
+  final ProjectCaptureStorage _captureStorage;
   final _uuid = const Uuid();
   bool _loaded = false;
   Future<void> _writeQueue = Future<void>.value();
@@ -112,11 +127,22 @@ class ProjectsNotifier extends StateNotifier<List<ProjectModel>> {
   }
 
   void deleteProject(String projectId) {
-    state = [
-      for (final project in state)
-        if (project.id != projectId) project,
-    ];
+    ProjectModel? removedProject;
+    final next = <ProjectModel>[];
+    for (final project in state) {
+      if (project.id == projectId) {
+        removedProject = project;
+        continue;
+      }
+      next.add(project);
+    }
+
+    state = next;
     _persist();
+
+    if (removedProject != null) {
+      unawaited(_cleanupProjectFiles(removedProject!));
+    }
   }
 
   String _defaultName() {
@@ -131,5 +157,22 @@ class ProjectsNotifier extends StateNotifier<List<ProjectModel>> {
     _writeQueue = _writeQueue
         .then((_) => _repository.writeProjects(snapshot))
         .catchError((_) {});
+  }
+
+  Future<void> _cleanupProjectFiles(ProjectModel project) async {
+    try {
+      for (final imagePath in project.imagePaths) {
+        await _captureStorage.deleteIfExists(imagePath);
+      }
+
+      final modelPath = project.modelPath;
+      if (modelPath != null && modelPath.isNotEmpty) {
+        await _captureStorage.deleteIfExists(modelPath);
+      }
+
+      await _captureStorage.deleteProjectData(project.id);
+    } catch (_) {
+      // best effort cleanup
+    }
   }
 }

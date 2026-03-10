@@ -1,44 +1,43 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:proyecto_3d/features/projects/project_model.dart';
-import 'package:proyecto_3d/features/projects/project_store.dart';
+import 'package:proyecto_3d/data/projects/project_repository.dart';
+import 'package:proyecto_3d/domain/projects/project_model.dart';
+import 'package:proyecto_3d/presentation/providers/project_providers.dart';
 
-class FakeProjectStorage implements ProjectStorage {
-  List<ScanProject> _projects;
+class FakeProjectRepository implements ProjectRepository {
+  List<ProjectModel> _projects;
   int writeCalls = 0;
 
-  FakeProjectStorage({List<ScanProject>? initial})
-    : _projects = List<ScanProject>.from(initial ?? const []);
+  FakeProjectRepository({List<ProjectModel>? initial})
+    : _projects = List<ProjectModel>.from(initial ?? const []);
 
   @override
-  Future<List<ScanProject>> readProjects() async {
-    return List<ScanProject>.from(_projects);
+  Future<List<ProjectModel>> readProjects() async {
+    return List<ProjectModel>.from(_projects);
   }
 
   @override
-  Future<void> writeProjects(List<ScanProject> projects) async {
+  Future<void> writeProjects(List<ProjectModel> projects) async {
     writeCalls++;
     _projects = [
       for (final project in projects)
-        project.copyWith(
-          posePhotos: Map<String, String>.from(project.posePhotos),
-        ),
+        project.copyWith(imagePaths: List<String>.from(project.imagePaths)),
     ];
   }
 
-  List<ScanProject> get projects => List<ScanProject>.from(_projects);
+  List<ProjectModel> get projects => List<ProjectModel>.from(_projects);
 }
 
-class RaceyProjectStorage implements ProjectStorage {
-  List<ScanProject> _projects = const [];
+class RaceyProjectRepository implements ProjectRepository {
+  List<ProjectModel> _projects = const [];
   int writeCalls = 0;
 
   @override
-  Future<List<ScanProject>> readProjects() async {
-    return List<ScanProject>.from(_projects);
+  Future<List<ProjectModel>> readProjects() async {
+    return List<ProjectModel>.from(_projects);
   }
 
   @override
-  Future<void> writeProjects(List<ScanProject> projects) async {
+  Future<void> writeProjects(List<ProjectModel> projects) async {
     writeCalls++;
     final delay = switch (writeCalls) {
       1 => Duration.zero,
@@ -49,41 +48,45 @@ class RaceyProjectStorage implements ProjectStorage {
     await Future<void>.delayed(delay);
     _projects = [
       for (final project in projects)
-        project.copyWith(
-          posePhotos: Map<String, String>.from(project.posePhotos),
-        ),
+        project.copyWith(imagePaths: List<String>.from(project.imagePaths)),
     ];
   }
 
-  List<ScanProject> get projects => List<ScanProject>.from(_projects);
+  List<ProjectModel> get projects => List<ProjectModel>.from(_projects);
 }
 
 void main() {
-  test('ScanProject serializa y deserializa', () {
-    final project = ScanProject(
+  test('ProjectModel serializa y deserializa', () {
+    final project = ProjectModel(
       id: 'project-1',
       name: 'Escaneo demo',
       createdAt: DateTime.parse('2026-03-02T12:00:00.000Z'),
-      posePhotos: const {'mid_0': '/tmp/mid_0.jpg'},
+      imagePaths: const ['/tmp/mid_0.jpg'],
+      modelPath: '/tmp/model.glb',
+      status: ProjectStatus.done,
     );
 
-    final roundTrip = ScanProject.fromJson(project.toJson());
+    final roundTrip = ProjectModel.fromJson(project.toJson());
 
     expect(roundTrip.id, project.id);
     expect(roundTrip.name, project.name);
     expect(roundTrip.createdAt, project.createdAt);
-    expect(roundTrip.posePhotos['mid_0'], '/tmp/mid_0.jpg');
+    expect(roundTrip.imagePaths, project.imagePaths);
+    expect(roundTrip.modelPath, project.modelPath);
+    expect(roundTrip.status, project.status);
   });
 
-  test('ProjectsNotifier carga desde storage', () async {
-    final storedProject = ScanProject(
+  test('ProjectsNotifier carga desde repository', () async {
+    final storedProject = ProjectModel(
       id: 'stored-1',
       name: 'Escaneo guardado',
       createdAt: DateTime.parse('2026-03-01T12:00:00.000Z'),
-      posePhotos: const {},
+      imagePaths: const [],
+      modelPath: null,
+      status: ProjectStatus.capturing,
     );
-    final storage = FakeProjectStorage(initial: [storedProject]);
-    final notifier = ProjectsNotifier(storage);
+    final repo = FakeProjectRepository(initial: [storedProject]);
+    final notifier = ProjectsNotifier(repo);
 
     await notifier.load();
 
@@ -91,34 +94,37 @@ void main() {
     expect(notifier.state.first.id, 'stored-1');
   });
 
-  test('ProjectsNotifier crea, actualiza y persiste fotos', () async {
-    final storage = FakeProjectStorage();
-    final notifier = ProjectsNotifier(storage);
+  test('ProjectsNotifier crea, actualiza y persiste imagenes', () async {
+    final repo = FakeProjectRepository();
+    final notifier = ProjectsNotifier(repo);
     await notifier.load();
 
-    final created = notifier.createNewProject();
-    notifier.setPosePhoto(created.id, 'mid_0', '/app/captures/mid_0.jpg');
-    notifier.removePosePhoto(created.id, 'mid_0');
+    final created = notifier.createProject(name: 'Proyecto demo');
+    notifier.addImagePath(created.id, '/app/captures/mid_0.jpg');
+    notifier.removeImagePath(created.id, '/app/captures/mid_0.jpg');
     await Future<void>.delayed(Duration.zero);
 
-    final persisted = storage.projects.first;
-    expect(storage.writeCalls, greaterThanOrEqualTo(3));
+    final persisted = repo.projects.first;
+    expect(repo.writeCalls, greaterThanOrEqualTo(3));
     expect(persisted.id, created.id);
-    expect(persisted.posePhotos, isEmpty);
+    expect(persisted.imagePaths, isEmpty);
   });
 
-  test('ProjectsNotifier serializa escrituras y conserva el ultimo estado', () async {
-    final storage = RaceyProjectStorage();
-    final notifier = ProjectsNotifier(storage);
-    await notifier.load();
+  test(
+    'ProjectsNotifier serializa escrituras y conserva el ultimo estado',
+    () async {
+      final repo = RaceyProjectRepository();
+      final notifier = ProjectsNotifier(repo);
+      await notifier.load();
 
-    final created = notifier.createNewProject();
-    notifier.setPosePhoto(created.id, 'mid_0', '/app/captures/mid_0.jpg');
-    notifier.removePosePhoto(created.id, 'mid_0');
-    await Future<void>.delayed(const Duration(milliseconds: 160));
+      final created = notifier.createProject(name: 'Proyecto demo');
+      notifier.addImagePath(created.id, '/app/captures/mid_0.jpg');
+      notifier.removeImagePath(created.id, '/app/captures/mid_0.jpg');
+      await Future<void>.delayed(const Duration(milliseconds: 160));
 
-    expect(storage.writeCalls, 3);
-    expect(storage.projects, hasLength(1));
-    expect(storage.projects.first.posePhotos, isEmpty);
-  });
+      expect(repo.writeCalls, 3);
+      expect(repo.projects, hasLength(1));
+      expect(repo.projects.first.imagePaths, isEmpty);
+    },
+  );
 }

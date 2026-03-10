@@ -41,7 +41,7 @@ void main() {
     await tester.pumpWidget(_buildApp(repo));
     await tester.pump();
 
-    expect(find.text('Módulo de captura'), findsOneWidget);
+    expect(find.text('Modulo de captura'), findsOneWidget);
     expect(find.text('Guia rapida'), findsOneWidget);
     expect(find.text('Asistencia en vivo'), findsOneWidget);
     expect(find.text('Proyecto activo'), findsOneWidget);
