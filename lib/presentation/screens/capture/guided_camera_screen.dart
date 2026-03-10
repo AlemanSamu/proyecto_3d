@@ -57,6 +57,8 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
   static const _minDetail = 12.0;
   static const _analysisStep = 8;
   static const _analysisInterval = Duration(milliseconds: 260);
+  static const _maxAutoGuideShift = 0.22;
+  static const _maxManualGuideShift = 0.36;
 
   CameraController? _controller;
   bool _initializing = true;
@@ -69,9 +71,42 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
 
   double? _brightness;
   double? _detail;
+  Offset _autoGuideOffset = Offset.zero;
+  Offset _manualGuideOffset = Offset.zero;
+  double _manualAngleOffsetDeg = 0;
+  double _autoOrbRotationDeg = 0;
+  double? _lastBalanceX;
+  double? _lastBalanceY;
+  bool _guideTouched = false;
   final List<GuidedCameraShot> _sessionShots = <GuidedCameraShot>[];
 
   int get _capturedTotal => widget.captureIndex + _sessionShots.length;
+  int get _baseGuideAngleDeg => (widget.angleDeg + (_sessionShots.length * 30)) % 360;
+  int get _guideAngleDeg {
+    final value = (_baseGuideAngleDeg + _manualAngleOffsetDeg.round()) % 360;
+    return value < 0 ? value + 360 : value;
+  }
+
+  Offset get _guideAlignment {
+    final x = _clamp(
+      _manualGuideOffset.dx + _autoGuideOffset.dx,
+      -_maxManualGuideShift,
+      _maxManualGuideShift,
+    );
+    final y = _clamp(
+      _targetYOffset(widget.levelKey) +
+          _manualGuideOffset.dy +
+          _autoGuideOffset.dy,
+      -0.75,
+      0.75,
+    );
+    return Offset(x, y);
+  }
+
+  double get _guideRotationRad {
+    final rotationDeg = _manualAngleOffsetDeg + _autoOrbRotationDeg;
+    return rotationDeg * pi / 180;
+  }
 
   @override
   void initState() {
@@ -162,6 +197,7 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
       setState(() {
         _brightness = metrics.brightness;
         _detail = metrics.detail;
+        _updateGuideFromMetrics(metrics);
       });
     } finally {
       _processingFrame = false;
@@ -202,7 +238,17 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
     final maxY = image.height - _analysisStep;
     double brightnessSum = 0;
     double detailSum = 0;
+    double leftSum = 0;
+    double rightSum = 0;
+    double topSum = 0;
+    double bottomSum = 0;
+    int leftCount = 0;
+    int rightCount = 0;
+    int topCount = 0;
+    int bottomCount = 0;
     int samples = 0;
+    final halfX = image.width / 2;
+    final halfY = image.height / 2;
 
     for (int y = 0; y < maxY; y += _analysisStep) {
       for (int x = 0; x < maxX; x += _analysisStep) {
@@ -212,14 +258,35 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
 
         brightnessSum += l;
         detailSum += (l - right).abs() + (l - down).abs();
+        if (x < halfX) {
+          leftSum += l;
+          leftCount++;
+        } else {
+          rightSum += l;
+          rightCount++;
+        }
+        if (y < halfY) {
+          topSum += l;
+          topCount++;
+        } else {
+          bottomSum += l;
+          bottomCount++;
+        }
         samples++;
       }
     }
 
     if (samples == 0) return null;
+    final leftAvg = leftSum / max(1, leftCount);
+    final rightAvg = rightSum / max(1, rightCount);
+    final topAvg = topSum / max(1, topCount);
+    final bottomAvg = bottomSum / max(1, bottomCount);
+
     return _FrameMetrics(
       brightness: brightnessSum / samples,
       detail: detailSum / samples,
+      balanceX: _clamp((rightAvg - leftAvg) / 255, -1, 1),
+      balanceY: _clamp((bottomAvg - topAvg) / 255, -1, 1),
     );
   }
 
@@ -234,6 +301,112 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
     if (!controller.value.isInitialized || _capturing) return false;
     if (!_assistEnabled || !widget.requireLiveQualityGate) return true;
     return _qualityOk;
+  }
+
+  void _updateGuideFromMetrics(_FrameMetrics metrics) {
+    if (_lastBalanceX != null && _lastBalanceY != null) {
+      final dx = _clamp(metrics.balanceX - _lastBalanceX!, -0.18, 0.18);
+      final dy = _clamp(metrics.balanceY - _lastBalanceY!, -0.18, 0.18);
+
+      final targetX = _clamp(
+        _autoGuideOffset.dx + (dx * 0.95),
+        -_maxAutoGuideShift,
+        _maxAutoGuideShift,
+      );
+      final targetY = _clamp(
+        _autoGuideOffset.dy + (dy * 0.95),
+        -_maxAutoGuideShift,
+        _maxAutoGuideShift,
+      );
+      _autoGuideOffset = Offset(
+        (_autoGuideOffset.dx * 0.34) + (targetX * 0.66),
+        (_autoGuideOffset.dy * 0.34) + (targetY * 0.66),
+      );
+      _autoOrbRotationDeg = _clamp(_autoOrbRotationDeg + (dx * 58), -45, 45);
+    }
+
+    _autoGuideOffset = Offset(
+      _autoGuideOffset.dx * 0.96,
+      _autoGuideOffset.dy * 0.96,
+    );
+    _autoOrbRotationDeg *= 0.93;
+    _lastBalanceX = metrics.balanceX;
+    _lastBalanceY = metrics.balanceY;
+  }
+
+  void _onGuidePanUpdate(DragUpdateDetails details, Size size) {
+    if (!mounted) return;
+    final dx = details.delta.dx / (size.width * 0.5);
+    final dy = details.delta.dy / (size.height * 0.5);
+    setState(() {
+      _guideTouched = true;
+      _manualGuideOffset = Offset(
+        _clamp(
+          _manualGuideOffset.dx + dx,
+          -_maxManualGuideShift,
+          _maxManualGuideShift,
+        ),
+        _clamp(
+          _manualGuideOffset.dy + dy,
+          -_maxManualGuideShift,
+          _maxManualGuideShift,
+        ),
+      );
+    });
+  }
+
+  void _onGuideDoubleTap() {
+    if (!mounted) return;
+    setState(() {
+      _guideTouched = true;
+      _manualGuideOffset = Offset.zero;
+      _manualAngleOffsetDeg = 0;
+    });
+    _showSnack('Guia centrada.');
+  }
+
+  void _onGuideTapDown(TapDownDetails details, Size size) {
+    if (!mounted) return;
+    final center = Offset(
+      size.width / 2 + (_guideAlignment.dx * size.width * 0.25),
+      size.height / 2 + (_guideAlignment.dy * size.height * 0.25),
+    );
+    final vector = details.localPosition - center;
+    final distance = vector.distance;
+    final ringRadius = min(size.width, size.height) * 0.28;
+    final nearRing = (distance - ringRadius).abs() <= 42;
+
+    setState(() {
+      _guideTouched = true;
+      if (nearRing) {
+        final tappedDeg = (atan2(vector.dy, vector.dx) * 180 / pi + 360) % 360;
+        _manualAngleOffsetDeg = _signedAngleDelta(_baseGuideAngleDeg, tappedDeg);
+      } else {
+        _manualGuideOffset = Offset(
+          _clamp(
+            (details.localPosition.dx - (size.width / 2)) / (size.width * 0.5),
+            -_maxManualGuideShift,
+            _maxManualGuideShift,
+          ),
+          _clamp(
+            ((details.localPosition.dy - (size.height / 2)) /
+                    (size.height * 0.5)) -
+                _targetYOffset(widget.levelKey),
+            -_maxManualGuideShift,
+            _maxManualGuideShift,
+          ),
+        );
+      }
+    });
+  }
+
+  double _signedAngleDelta(double fromDeg, double toDeg) {
+    final delta = ((toDeg - fromDeg + 540) % 360) - 180;
+    return delta < -180 ? delta + 360 : delta;
+  }
+
+  double _clamp(double value, double minValue, double maxValue) {
+    return value.clamp(minValue, maxValue).toDouble();
   }
 
   Future<void> _takePicture() async {
@@ -411,20 +584,57 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
           fit: StackFit.expand,
           children: [
             CameraPreview(controller),
-            IgnorePointer(
-              child: CustomPaint(
-                painter: _GuideOrbPainter(
-                  capturedCount: _capturedTotal,
-                  targetCount: widget.targetMaxPhotos,
-                ),
-                size: Size.infinite,
-              ),
-            ),
-            IgnorePointer(
-              child: _TargetReticle(
-                yOffset: _targetYOffset(widget.levelKey),
-                levelLabel: widget.levelLabel,
-                angleDeg: (widget.angleDeg + (_sessionShots.length * 30)) % 360,
+            Positioned.fill(
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final size = Size(
+                    constraints.maxWidth,
+                    constraints.maxHeight,
+                  );
+                  return GestureDetector(
+                    behavior: HitTestBehavior.translucent,
+                    onPanUpdate: (details) => _onGuidePanUpdate(details, size),
+                    onDoubleTap: _onGuideDoubleTap,
+                    onTapDown: (details) => _onGuideTapDown(details, size),
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        IgnorePointer(
+                          child: CustomPaint(
+                            painter: _GuideOrbPainter(
+                              capturedCount: _capturedTotal,
+                              targetCount: widget.targetMaxPhotos,
+                              alignmentOffset: _guideAlignment,
+                              rotationRad: _guideRotationRad,
+                            ),
+                            size: Size.infinite,
+                          ),
+                        ),
+                        IgnorePointer(
+                          child: _TargetReticle(
+                            alignmentOffset: _guideAlignment,
+                            levelLabel: widget.levelLabel,
+                            angleDeg: _guideAngleDeg,
+                          ),
+                        ),
+                        Positioned(
+                          top: 90,
+                          left: 0,
+                          right: 0,
+                          child: AnimatedOpacity(
+                            duration: const Duration(milliseconds: 220),
+                            opacity: _guideTouched ? 0.45 : 0.86,
+                            child: const Center(
+                              child: _GuideHintChip(
+                                text: 'Arrastra la guia. Doble toque para centrar.',
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
               ),
             ),
             SafeArea(
@@ -471,7 +681,7 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
             IconButton(
               onPressed: () {
                 _showSnack(
-                  'Rota alrededor del objeto y usa las miniaturas para editar.',
+                  'Arrastra la guia, toca el aro para orientar y usa doble toque para centrar.',
                 );
               },
               style: IconButton.styleFrom(
@@ -697,19 +907,19 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
 
 class _TargetReticle extends StatelessWidget {
   const _TargetReticle({
-    required this.yOffset,
+    required this.alignmentOffset,
     required this.levelLabel,
     required this.angleDeg,
   });
 
-  final double yOffset;
+  final Offset alignmentOffset;
   final String levelLabel;
   final int angleDeg;
 
   @override
   Widget build(BuildContext context) {
     return Align(
-      alignment: Alignment(0, yOffset),
+      alignment: Alignment(alignmentOffset.dx, alignmentOffset.dy),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -730,6 +940,24 @@ class _TargetReticle extends StatelessWidget {
                 ),
                 Center(
                   child: Container(width: 2, height: 32, color: Colors.white70),
+                ),
+                Positioned(
+                  right: 14,
+                  bottom: 14,
+                  child: Container(
+                    width: 26,
+                    height: 26,
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.45),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white24),
+                    ),
+                    child: const Icon(
+                      Icons.open_with_rounded,
+                      size: 14,
+                      color: Colors.white70,
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -785,15 +1013,51 @@ class _StatusPill extends StatelessWidget {
   }
 }
 
+class _GuideHintChip extends StatelessWidget {
+  const _GuideHintChip({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.42),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.white24),
+      ),
+      child: Text(
+        text,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 11,
+          fontWeight: FontWeight.w500,
+        ),
+      ),
+    );
+  }
+}
+
 class _GuideOrbPainter extends CustomPainter {
-  _GuideOrbPainter({required this.capturedCount, required this.targetCount});
+  _GuideOrbPainter({
+    required this.capturedCount,
+    required this.targetCount,
+    required this.alignmentOffset,
+    required this.rotationRad,
+  });
 
   final int capturedCount;
   final int targetCount;
+  final Offset alignmentOffset;
+  final double rotationRad;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final center = Offset(size.width / 2, size.height / 2);
+    final center = Offset(
+      (size.width / 2) + (alignmentOffset.dx * size.width * 0.25),
+      (size.height / 2) + (alignmentOffset.dy * size.height * 0.25),
+    );
     final radius = min(size.width, size.height) * 0.28;
 
     final ring = Paint()
@@ -812,7 +1076,7 @@ class _GuideOrbPainter extends CustomPainter {
 
     final points = min(max(targetCount, 12), 80);
     for (int i = 0; i < points; i++) {
-      final angle = (i / points) * pi * 2;
+      final angle = ((i / points) * pi * 2) + rotationRad;
       final p = Offset(
         center.dx + cos(angle) * radius,
         center.dy + sin(angle) * (radius * 0.62),
@@ -828,13 +1092,22 @@ class _GuideOrbPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _GuideOrbPainter oldDelegate) {
     return oldDelegate.capturedCount != capturedCount ||
-        oldDelegate.targetCount != targetCount;
+        oldDelegate.targetCount != targetCount ||
+        oldDelegate.alignmentOffset != alignmentOffset ||
+        oldDelegate.rotationRad != rotationRad;
   }
 }
 
 class _FrameMetrics {
-  const _FrameMetrics({required this.brightness, required this.detail});
+  const _FrameMetrics({
+    required this.brightness,
+    required this.detail,
+    required this.balanceX,
+    required this.balanceY,
+  });
 
   final double brightness;
   final double detail;
+  final double balanceX;
+  final double balanceY;
 }
