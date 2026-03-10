@@ -57,7 +57,9 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
   static const _minDetail = 12.0;
   static const _analysisStep = 8;
   static const _analysisInterval = Duration(milliseconds: 260);
-  static const _maxAutoGuideShift = 0.22;
+  static const _defaultAutoGuideShift = 0.22;
+  static const _defaultGuideSensitivity = 0.95;
+  static const _defaultGuideReturnSpeed = 0.04;
   static const _maxManualGuideShift = 0.36;
 
   CameraController? _controller;
@@ -78,6 +80,9 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
   double? _lastBalanceX;
   double? _lastBalanceY;
   bool _guideTouched = false;
+  double _guideAutoShiftLimit = _defaultAutoGuideShift;
+  double _guideSensitivity = _defaultGuideSensitivity;
+  double _guideReturnSpeed = _defaultGuideReturnSpeed;
   final List<GuidedCameraShot> _sessionShots = <GuidedCameraShot>[];
 
   int get _capturedTotal => widget.captureIndex + _sessionShots.length;
@@ -309,27 +314,33 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
       final dy = _clamp(metrics.balanceY - _lastBalanceY!, -0.18, 0.18);
 
       final targetX = _clamp(
-        _autoGuideOffset.dx + (dx * 0.95),
-        -_maxAutoGuideShift,
-        _maxAutoGuideShift,
+        _autoGuideOffset.dx + (dx * _guideSensitivity),
+        -_guideAutoShiftLimit,
+        _guideAutoShiftLimit,
       );
       final targetY = _clamp(
-        _autoGuideOffset.dy + (dy * 0.95),
-        -_maxAutoGuideShift,
-        _maxAutoGuideShift,
+        _autoGuideOffset.dy + (dy * _guideSensitivity),
+        -_guideAutoShiftLimit,
+        _guideAutoShiftLimit,
       );
       _autoGuideOffset = Offset(
         (_autoGuideOffset.dx * 0.34) + (targetX * 0.66),
         (_autoGuideOffset.dy * 0.34) + (targetY * 0.66),
       );
-      _autoOrbRotationDeg = _clamp(_autoOrbRotationDeg + (dx * 58), -45, 45);
+      final rotationGain = 32 + (_guideSensitivity * 28);
+      _autoOrbRotationDeg = _clamp(
+        _autoOrbRotationDeg + (dx * rotationGain),
+        -45,
+        45,
+      );
     }
 
+    final keepFactor = _clamp(1 - _guideReturnSpeed, 0.65, 0.995);
     _autoGuideOffset = Offset(
-      _autoGuideOffset.dx * 0.96,
-      _autoGuideOffset.dy * 0.96,
+      _autoGuideOffset.dx * keepFactor,
+      _autoGuideOffset.dy * keepFactor,
     );
-    _autoOrbRotationDeg *= 0.93;
+    _autoOrbRotationDeg *= _clamp(keepFactor + 0.02, 0.67, 0.995);
     _lastBalanceX = metrics.balanceX;
     _lastBalanceY = metrics.balanceY;
   }
@@ -512,6 +523,101 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
+  Future<void> _openGuideTuningSheet() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF111216),
+      showDragHandle: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setModalState) {
+          void update(void Function() mutate) {
+            mutate();
+            setModalState(() {});
+            if (mounted) setState(() {});
+          }
+
+          String asPercent(double value) => '${(value * 100).round()}%';
+
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Ajuste de guia',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  _TuningRow(
+                    label: 'Sensibilidad',
+                    value: asPercent(_guideSensitivity),
+                  ),
+                  Slider(
+                    value: _guideSensitivity,
+                    min: 0.45,
+                    max: 1.65,
+                    divisions: 24,
+                    onChanged: (value) =>
+                        update(() => _guideSensitivity = value),
+                  ),
+                  _TuningRow(
+                    label: 'Limite movimiento',
+                    value: asPercent(_guideAutoShiftLimit),
+                  ),
+                  Slider(
+                    value: _guideAutoShiftLimit,
+                    min: 0.10,
+                    max: 0.40,
+                    divisions: 15,
+                    onChanged: (value) =>
+                        update(() => _guideAutoShiftLimit = value),
+                  ),
+                  _TuningRow(
+                    label: 'Retorno al centro',
+                    value: asPercent(_guideReturnSpeed),
+                  ),
+                  Slider(
+                    value: _guideReturnSpeed,
+                    min: 0.01,
+                    max: 0.22,
+                    divisions: 21,
+                    onChanged: (value) =>
+                        update(() => _guideReturnSpeed = value),
+                  ),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      TextButton.icon(
+                        onPressed: () => update(() {
+                          _guideSensitivity = _defaultGuideSensitivity;
+                          _guideAutoShiftLimit = _defaultAutoGuideShift;
+                          _guideReturnSpeed = _defaultGuideReturnSpeed;
+                        }),
+                        icon: const Icon(Icons.refresh_rounded),
+                        label: const Text('Restablecer'),
+                      ),
+                      const Spacer(),
+                      FilledButton(
+                        onPressed: () => Navigator.of(ctx).pop(),
+                        child: const Text('Listo'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   double _targetYOffset(String levelKey) {
     return switch (levelKey) {
       'top' => -0.45,
@@ -678,16 +784,32 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
               ),
             ),
             const Spacer(),
-            IconButton(
-              onPressed: () {
-                _showSnack(
-                  'Arrastra la guia, toca el aro para orientar y usa doble toque para centrar.',
-                );
-              },
-              style: IconButton.styleFrom(
-                backgroundColor: Colors.black.withValues(alpha: 0.4),
-              ),
-              icon: const Icon(Icons.help_outline_rounded, color: Colors.white),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  onPressed: _openGuideTuningSheet,
+                  style: IconButton.styleFrom(
+                    backgroundColor: Colors.black.withValues(alpha: 0.4),
+                  ),
+                  icon: const Icon(Icons.tune_rounded, color: Colors.white),
+                ),
+                const SizedBox(width: 8),
+                IconButton(
+                  onPressed: () {
+                    _showSnack(
+                      'Arrastra la guia, toca el aro para orientar y usa doble toque para centrar.',
+                    );
+                  },
+                  style: IconButton.styleFrom(
+                    backgroundColor: Colors.black.withValues(alpha: 0.4),
+                  ),
+                  icon: const Icon(
+                    Icons.help_outline_rounded,
+                    color: Colors.white,
+                  ),
+                ),
+              ],
             ),
           ],
         ),
@@ -1035,6 +1157,35 @@ class _GuideHintChip extends StatelessWidget {
           fontWeight: FontWeight.w500,
         ),
       ),
+    );
+  }
+}
+
+class _TuningRow extends StatelessWidget {
+  const _TuningRow({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            label,
+            style: const TextStyle(color: Colors.white, fontSize: 13),
+          ),
+        ),
+        Text(
+          value,
+          style: const TextStyle(
+            color: Colors.white70,
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
     );
   }
 }
