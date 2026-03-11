@@ -141,7 +141,7 @@ class ProjectsNotifier extends StateNotifier<List<ProjectModel>> {
     _persist();
 
     if (removedProject != null) {
-      unawaited(_cleanupProjectFiles(removedProject!));
+      unawaited(_cleanupProjectFiles(removedProject));
     }
   }
 

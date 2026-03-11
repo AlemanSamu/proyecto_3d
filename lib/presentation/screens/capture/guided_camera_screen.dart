@@ -391,7 +391,10 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
       _guideTouched = true;
       if (nearRing) {
         final tappedDeg = (atan2(vector.dy, vector.dx) * 180 / pi + 360) % 360;
-        _manualAngleOffsetDeg = _signedAngleDelta(_baseGuideAngleDeg, tappedDeg);
+        _manualAngleOffsetDeg = _signedAngleDelta(
+          _baseGuideAngleDeg.toDouble(),
+          tappedDeg,
+        );
       } else {
         _manualGuideOffset = Offset(
           _clamp(
