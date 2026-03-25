@@ -69,12 +69,7 @@ Map<String, Object> _analyzeQualitySync(String filePath) {
 }
 
 Map<String, Object> _fallbackReport(String hint) {
-  return {
-    'isOk': true,
-    'brightness': 999.0,
-    'sharpness': 999.0,
-    'hint': hint,
-  };
+  return {'isOk': true, 'brightness': 999.0, 'sharpness': 999.0, 'hint': hint};
 }
 
 double _estimateBrightness(img.Image image) {

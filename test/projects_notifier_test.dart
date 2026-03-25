@@ -77,10 +77,7 @@ void main() {
     notifier.deleteProject(project.id);
     await Future<void>.delayed(Duration.zero);
 
-    expect(
-      notifier.state.where((item) => item.id == project.id),
-      isEmpty,
-    );
+    expect(notifier.state.where((item) => item.id == project.id), isEmpty);
     expect(storage.deletedPaths, contains('/tmp/cap_1.jpg'));
     expect(storage.deletedPaths, contains('/tmp/cap_2.jpg'));
     expect(storage.deletedPaths, contains('/tmp/model.glb'));
@@ -99,9 +96,6 @@ void main() {
     notifier.deleteProject(project.id);
     await Future<void>.delayed(Duration.zero);
 
-    expect(
-      notifier.state.where((item) => item.id == project.id),
-      isEmpty,
-    );
+    expect(notifier.state.where((item) => item.id == project.id), isEmpty);
   });
 }

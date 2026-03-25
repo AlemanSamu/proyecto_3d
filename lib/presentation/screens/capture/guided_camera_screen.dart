@@ -1,18 +1,28 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 
+import '../../widgets/capture_guidance_ring.dart';
+import 'capture_guide_plan.dart';
+
 class GuidedCameraShot {
   const GuidedCameraShot({
     required this.sourcePath,
+    this.poseId,
+    this.angleDeg,
+    this.level,
     this.brightness,
     this.detail,
     required this.qualityOk,
   });
 
   final String sourcePath;
+  final String? poseId;
+  final int? angleDeg;
+  final String? level;
   final double? brightness;
   final double? detail;
   final bool qualityOk;
@@ -24,7 +34,9 @@ class GuidedCameraSessionResult {
   final List<GuidedCameraShot> shots;
 }
 
-enum _SessionShotAction { replace, delete }
+enum _SceneQuality { analyzing, good, warning, critical }
+
+enum _DistanceBand { unknown, far, optimal, close }
 
 class GuidedCameraScreen extends StatefulWidget {
   const GuidedCameraScreen({
@@ -56,67 +68,380 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
   static const _minBrightness = 55.0;
   static const _minDetail = 12.0;
   static const _analysisStep = 8;
-  static const _analysisInterval = Duration(milliseconds: 260);
-  static const _defaultAutoGuideShift = 0.22;
-  static const _defaultGuideSensitivity = 0.95;
-  static const _defaultGuideReturnSpeed = 0.04;
-  static const _maxManualGuideShift = 0.36;
+  static const _analysisInterval = Duration(milliseconds: 280);
 
   CameraController? _controller;
   bool _initializing = true;
   bool _capturing = false;
   bool _streaming = false;
-  bool _assistEnabled = true;
   bool _processingFrame = false;
+  bool _submitted = false;
+  bool _showCaptureFx = false;
   DateTime _lastFrameAt = DateTime.fromMillisecondsSinceEpoch(0);
-  String? _errorText;
-
   double? _brightness;
   double? _detail;
-  Offset _autoGuideOffset = Offset.zero;
-  Offset _manualGuideOffset = Offset.zero;
-  double _manualAngleOffsetDeg = 0;
-  double _autoOrbRotationDeg = 0;
+  double _stability = 1;
   double? _lastBalanceX;
   double? _lastBalanceY;
-  bool _guideTouched = false;
-  double _guideAutoShiftLimit = _defaultAutoGuideShift;
-  double _guideSensitivity = _defaultGuideSensitivity;
-  double _guideReturnSpeed = _defaultGuideReturnSpeed;
+  String? _errorText;
+  Timer? _promptTimer;
+  _GuidanceMessage? _temporaryGuidance;
   final List<GuidedCameraShot> _sessionShots = <GuidedCameraShot>[];
 
   int get _capturedTotal => widget.captureIndex + _sessionShots.length;
-  int get _baseGuideAngleDeg => (widget.angleDeg + (_sessionShots.length * 30)) % 360;
-  int get _guideAngleDeg {
-    final value = (_baseGuideAngleDeg + _manualAngleOffsetDeg.round()) % 360;
-    return value < 0 ? value + 360 : value;
+  CaptureGuideStep get _nextStep =>
+      CaptureGuidePlan.stepForCaptureCount(_capturedTotal);
+
+  _SceneQuality get _quality {
+    if (_brightness == null || _detail == null) return _SceneQuality.analyzing;
+    if (_brightness! < (_minBrightness * 0.72) ||
+        _detail! < (_minDetail * 0.7)) {
+      return _SceneQuality.critical;
+    }
+    if (_brightness! < _minBrightness ||
+        _detail! < _minDetail ||
+        _stability < 0.45) {
+      return _SceneQuality.warning;
+    }
+    return _SceneQuality.good;
   }
 
-  Offset get _guideAlignment {
-    final x = _clamp(
-      _manualGuideOffset.dx + _autoGuideOffset.dx,
-      -_maxManualGuideShift,
-      _maxManualGuideShift,
-    );
-    final y = _clamp(
-      _targetYOffset(widget.levelKey) +
-          _manualGuideOffset.dy +
-          _autoGuideOffset.dy,
-      -0.75,
-      0.75,
-    );
-    return Offset(x, y);
+  bool get _isCaptureAllowed {
+    final controller = _controller;
+    if (_capturing || controller == null || !controller.value.isInitialized) {
+      return false;
+    }
+    if (!widget.requireLiveQualityGate) return true;
+    return _quality == _SceneQuality.analyzing ||
+        _quality == _SceneQuality.good;
   }
 
-  double get _guideRotationRad {
-    final rotationDeg = _manualAngleOffsetDeg + _autoOrbRotationDeg;
-    return rotationDeg * pi / 180;
+  List<int> get _capturedSectors {
+    final sectors = <int>{};
+    for (final shot in _sessionShots) {
+      final angle = shot.angleDeg;
+      if (angle == null) continue;
+      sectors.add((((angle % 360) + 360) % 360) ~/ 30 * 30);
+    }
+    return sectors.toList()..sort();
   }
+
+  double get _coverageProgress {
+    if (widget.targetMinPhotos == 0) return 0;
+    return (_capturedTotal / widget.targetMinPhotos).clamp(0.0, 1.0);
+  }
+
+  _DistanceBand get _distanceBand {
+    if (_detail == null) return _DistanceBand.unknown;
+    if (_detail! < (_minDetail * 0.82)) return _DistanceBand.far;
+    if (_detail! > (_minDetail * 2.1)) return _DistanceBand.close;
+    return _DistanceBand.optimal;
+  }
+
+  String get _distanceLabel => switch (_distanceBand) {
+    _DistanceBand.unknown => '--',
+    _DistanceBand.far => 'Lejos',
+    _DistanceBand.optimal => 'Ok',
+    _DistanceBand.close => 'Cerca',
+  };
+
+  Offset get _objectOffset => Offset(
+    (_lastBalanceX ?? 0).clamp(-1.0, 1.0),
+    (_lastBalanceY ?? 0).clamp(-1.0, 1.0),
+  );
+
+  _GuidanceMessage get _activeGuidance =>
+      _temporaryGuidance ?? _buildLiveGuidance();
 
   @override
   void initState() {
     super.initState();
     _initializeCamera();
+  }
+
+  @override
+  void dispose() {
+    _promptTimer?.cancel();
+    if (!_submitted) unawaited(_cleanupUnsavedShots());
+    unawaited(_stopImageStreamIfNeeded());
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PopScope(
+      canPop: !_capturing,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop || _capturing) return;
+        Navigator.of(context).pop();
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        body: SafeArea(
+          child: Stack(
+            children: [
+              Positioned.fill(child: _buildCameraLayer()),
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [
+                          Colors.black.withValues(alpha: 0.34),
+                          Colors.transparent,
+                          Colors.black.withValues(alpha: 0.64),
+                        ],
+                        stops: const [0, 0.38, 1],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              Positioned.fill(child: _buildOverlay()),
+              if (_showCaptureFx)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: Container(
+                      color: Colors.white.withValues(alpha: 0.16),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCameraLayer() {
+    if (_initializing) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_errorText != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(
+            _errorText!,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Colors.white),
+          ),
+        ),
+      );
+    }
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) {
+      return const SizedBox.shrink();
+    }
+    return CameraPreview(controller);
+  }
+
+  Widget _buildOverlay() {
+    final topBar = _TopHud(
+      projectName: widget.projectName,
+      capturedTotal: _capturedTotal,
+      targetMinPhotos: widget.targetMinPhotos,
+      sessionShotCount: _sessionShots.length,
+      progress: _coverageProgress,
+      onClose: _capturing ? null : () => Navigator.of(context).pop(),
+    );
+
+    if (_initializing || _errorText != null) {
+      return Column(children: [topBar, const Spacer()]);
+    }
+
+    final guidance = _activeGuidance;
+
+    return Column(
+      children: [
+        topBar,
+        const Spacer(),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 34),
+          child: AspectRatio(
+            aspectRatio: 1,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                CaptureGuidanceRing(
+                  capturedSectors: _capturedSectors,
+                  suggestedAngle: _nextStep.angleDeg,
+                  highlightColor: guidance.color,
+                  objectOffset: _objectOffset,
+                ),
+                Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 20,
+                      height: 20,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Colors.black.withValues(alpha: 0.42),
+                        border: Border.all(color: Colors.white24),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.42),
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(color: Colors.white24),
+                      ),
+                      child: Text(
+                        '${_nextStep.level.label} - ${_nextStep.angleDeg} deg',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 18),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _GuidanceBanner(message: guidance),
+              const SizedBox(height: 10),
+              Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _HudPill(label: 'Nivel', value: _nextStep.level.label),
+                  _HudPill(label: 'Sector', value: '${_nextStep.angleDeg} deg'),
+                  _HudPill(label: 'Distancia', value: _distanceLabel),
+                  _HudPill(
+                    label: 'Progreso',
+                    value: '$_capturedTotal/${widget.targetMinPhotos}',
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Expanded(
+                    child: _ControlButton(
+                      icon: Icons.photo_library_outlined,
+                      label: _sessionShots.isEmpty
+                          ? 'Lote'
+                          : 'Lote ${_sessionShots.length}',
+                      onTap: _openSessionShotsSheet,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  GestureDetector(
+                    onTap: _isCaptureAllowed
+                        ? _takePicture
+                        : _handleBlockedShot,
+                    child: _ShutterButton(
+                      enabled: _isCaptureAllowed,
+                      capturing: _capturing,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _ControlButton(
+                      icon: Icons.check_rounded,
+                      label: 'Finalizar',
+                      emphasized: _sessionShots.isNotEmpty,
+                      onTap: _finishSession,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  _GuidanceMessage _buildLiveGuidance() {
+    if (_quality == _SceneQuality.critical) {
+      if ((_brightness ?? 0) < (_minBrightness * 0.72)) {
+        return const _GuidanceMessage(
+          text: 'Busca un poco mas de luz',
+          color: Color(0xFFFFB347),
+          icon: Icons.wb_sunny_outlined,
+        );
+      }
+      return const _GuidanceMessage(
+        text: 'Acercate un poco al objeto',
+        color: Color(0xFFFFB347),
+        icon: Icons.zoom_in_rounded,
+      );
+    }
+
+    if (_stability < 0.45) {
+      return const _GuidanceMessage(
+        text: 'Falta estabilidad',
+        color: Color(0xFFFFB347),
+        icon: Icons.motion_photos_pause_rounded,
+      );
+    }
+
+    final balanceX = _lastBalanceX ?? 0;
+    if (balanceX > 0.14) {
+      return const _GuidanceMessage(
+        text: 'Mueve la camara a la izquierda',
+        color: Color(0xFF76A7FF),
+        icon: Icons.west_rounded,
+      );
+    }
+    if (balanceX < -0.14) {
+      return const _GuidanceMessage(
+        text: 'Mueve la camara a la derecha',
+        color: Color(0xFF76A7FF),
+        icon: Icons.east_rounded,
+      );
+    }
+
+    final balanceY = _lastBalanceY ?? 0;
+    if (balanceY > 0.16) {
+      return const _GuidanceMessage(
+        text: 'Sube un poco la camara',
+        color: Color(0xFF76A7FF),
+        icon: Icons.north_rounded,
+      );
+    }
+    if (balanceY < -0.16) {
+      return const _GuidanceMessage(
+        text: 'Baja un poco la camara',
+        color: Color(0xFF76A7FF),
+        icon: Icons.south_rounded,
+      );
+    }
+
+    if (_quality == _SceneQuality.good) {
+      return const _GuidanceMessage(
+        text: 'Lista para capturar',
+        color: Color(0xFF57D684),
+        icon: Icons.check_circle_outline_rounded,
+      );
+    }
+
+    return const _GuidanceMessage(
+      text: 'Manten el objeto dentro del anillo',
+      color: Color(0xFFC3CAD9),
+      icon: Icons.track_changes_rounded,
+    );
   }
 
   Future<void> _initializeCamera() async {
@@ -125,34 +450,29 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
       if (cameras.isEmpty) {
         if (!mounted) return;
         setState(() {
-          _errorText = 'No hay camaras disponibles.';
+          _errorText = 'No se encontraron camaras disponibles.';
           _initializing = false;
         });
         return;
       }
-
-      final selected = cameras.firstWhere(
-        (camera) => camera.lensDirection == CameraLensDirection.back,
+      final camera = cameras.firstWhere(
+        (item) => item.lensDirection == CameraLensDirection.back,
         orElse: () => cameras.first,
       );
-
       final controller = CameraController(
-        selected,
+        camera,
         ResolutionPreset.high,
         enableAudio: false,
       );
       await controller.initialize();
-
       if (!mounted) {
         await controller.dispose();
         return;
       }
-
       setState(() {
         _controller = controller;
         _initializing = false;
       });
-
       await _startImageStreamIfNeeded();
     } catch (_) {
       if (!mounted) return;
@@ -165,48 +485,60 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
 
   Future<void> _startImageStreamIfNeeded() async {
     final controller = _controller;
-    if (controller == null) return;
-    if (!controller.value.isInitialized || _streaming) return;
-
+    if (controller == null || _streaming || !controller.value.isInitialized) {
+      return;
+    }
     try {
       await controller.startImageStream(_onFrame);
       _streaming = true;
-    } catch (_) {}
+    } catch (_) {
+      _streaming = false;
+    }
   }
 
   Future<void> _stopImageStreamIfNeeded() async {
     final controller = _controller;
-    if (controller == null) return;
-    if (!controller.value.isInitialized || !_streaming) return;
-
+    if (controller == null || !_streaming || !controller.value.isInitialized) {
+      return;
+    }
     try {
       await controller.stopImageStream();
     } catch (_) {
-      // Ignore: plugin can throw when stream is already stopped.
+      // ignore race conditions
     } finally {
       _streaming = false;
     }
   }
 
   void _onFrame(CameraImage image) {
-    if (!mounted || _processingFrame || _capturing) return;
+    if (!mounted || _capturing || _processingFrame) return;
     final now = DateTime.now();
     if (now.difference(_lastFrameAt) < _analysisInterval) return;
-
     _lastFrameAt = now;
     _processingFrame = true;
-
     try {
       final metrics = _estimateMetrics(image);
       if (metrics == null || !mounted) return;
+      final stability = _estimateStability(metrics.balanceX, metrics.balanceY);
       setState(() {
         _brightness = metrics.brightness;
         _detail = metrics.detail;
-        _updateGuideFromMetrics(metrics);
+        _stability = stability;
+        _lastBalanceX = metrics.balanceX;
+        _lastBalanceY = metrics.balanceY;
       });
     } finally {
       _processingFrame = false;
     }
+  }
+
+  double _estimateStability(double balanceX, double balanceY) {
+    if (_lastBalanceX == null || _lastBalanceY == null) return _stability;
+    final movement =
+        ((balanceX - _lastBalanceX!).abs() + (balanceY - _lastBalanceY!).abs())
+            .clamp(0.0, 0.42);
+    final instant = 1 - (movement / 0.42);
+    return (_stability * 0.58) + (instant * 0.42);
   }
 
   _FrameMetrics? _estimateMetrics(CameraImage image) {
@@ -215,28 +547,21 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
       return null;
     }
 
-    final format = image.format.group;
-
     double lumaAt(int x, int y) {
-      if (format == ImageFormatGroup.bgra8888) {
+      if (image.format.group == ImageFormatGroup.bgra8888) {
         final plane = image.planes[0];
-        final bytes = plane.bytes;
-        final rowStride = plane.bytesPerRow;
-        final index = y * rowStride + x * 4;
-        if (index < 0 || index + 2 >= bytes.length) return 0;
-        final b = bytes[index].toDouble();
-        final g = bytes[index + 1].toDouble();
-        final r = bytes[index + 2].toDouble();
+        final index = y * plane.bytesPerRow + (x * 4);
+        if (index < 0 || index + 2 >= plane.bytes.length) return 0;
+        final b = plane.bytes[index].toDouble();
+        final g = plane.bytes[index + 1].toDouble();
+        final r = plane.bytes[index + 2].toDouble();
         return 0.2126 * r + 0.7152 * g + 0.0722 * b;
       }
-
       final plane = image.planes[0];
-      final bytes = plane.bytes;
-      final rowStride = plane.bytesPerRow;
       final pixelStride = plane.bytesPerPixel ?? 1;
-      final index = y * rowStride + x * pixelStride;
-      if (index < 0 || index >= bytes.length) return 0;
-      return bytes[index].toDouble();
+      final index = y * plane.bytesPerRow + (x * pixelStride);
+      if (index < 0 || index >= plane.bytes.length) return 0;
+      return plane.bytes[index].toDouble();
     }
 
     final maxX = image.width - _analysisStep;
@@ -257,846 +582,465 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
 
     for (int y = 0; y < maxY; y += _analysisStep) {
       for (int x = 0; x < maxX; x += _analysisStep) {
-        final l = lumaAt(x, y);
+        final luma = lumaAt(x, y);
         final right = lumaAt(x + _analysisStep, y);
         final down = lumaAt(x, y + _analysisStep);
-
-        brightnessSum += l;
-        detailSum += (l - right).abs() + (l - down).abs();
+        brightnessSum += luma;
+        detailSum += (luma - right).abs() + (luma - down).abs();
+        samples++;
         if (x < halfX) {
-          leftSum += l;
+          leftSum += luma;
           leftCount++;
         } else {
-          rightSum += l;
+          rightSum += luma;
           rightCount++;
         }
         if (y < halfY) {
-          topSum += l;
+          topSum += luma;
           topCount++;
         } else {
-          bottomSum += l;
+          bottomSum += luma;
           bottomCount++;
         }
-        samples++;
       }
     }
 
     if (samples == 0) return null;
-    final leftAvg = leftSum / max(1, leftCount);
-    final rightAvg = rightSum / max(1, rightCount);
-    final topAvg = topSum / max(1, topCount);
-    final bottomAvg = bottomSum / max(1, bottomCount);
 
     return _FrameMetrics(
       brightness: brightnessSum / samples,
       detail: detailSum / samples,
-      balanceX: _clamp((rightAvg - leftAvg) / 255, -1, 1),
-      balanceY: _clamp((bottomAvg - topAvg) / 255, -1, 1),
+      balanceX:
+          ((rightSum / max(1, rightCount) - leftSum / max(1, leftCount)) / 255)
+              .clamp(-1.0, 1.0)
+              .toDouble(),
+      balanceY:
+          ((bottomSum / max(1, bottomCount) - topSum / max(1, topCount)) / 255)
+              .clamp(-1.0, 1.0)
+              .toDouble(),
     );
-  }
-
-  bool get _hasMetrics => _brightness != null && _detail != null;
-  bool get _brightnessOk => (_brightness ?? 0) >= _minBrightness;
-  bool get _detailOk => (_detail ?? 0) >= _minDetail;
-  bool get _qualityOk => !_hasMetrics || (_brightnessOk && _detailOk);
-
-  bool get _canCapture {
-    final controller = _controller;
-    if (controller == null) return false;
-    if (!controller.value.isInitialized || _capturing) return false;
-    if (!_assistEnabled || !widget.requireLiveQualityGate) return true;
-    return _qualityOk;
-  }
-
-  void _updateGuideFromMetrics(_FrameMetrics metrics) {
-    if (_lastBalanceX != null && _lastBalanceY != null) {
-      final dx = _clamp(metrics.balanceX - _lastBalanceX!, -0.18, 0.18);
-      final dy = _clamp(metrics.balanceY - _lastBalanceY!, -0.18, 0.18);
-
-      final targetX = _clamp(
-        _autoGuideOffset.dx + (dx * _guideSensitivity),
-        -_guideAutoShiftLimit,
-        _guideAutoShiftLimit,
-      );
-      final targetY = _clamp(
-        _autoGuideOffset.dy + (dy * _guideSensitivity),
-        -_guideAutoShiftLimit,
-        _guideAutoShiftLimit,
-      );
-      _autoGuideOffset = Offset(
-        (_autoGuideOffset.dx * 0.34) + (targetX * 0.66),
-        (_autoGuideOffset.dy * 0.34) + (targetY * 0.66),
-      );
-      final rotationGain = 32 + (_guideSensitivity * 28);
-      _autoOrbRotationDeg = _clamp(
-        _autoOrbRotationDeg + (dx * rotationGain),
-        -45,
-        45,
-      );
-    }
-
-    final keepFactor = _clamp(1 - _guideReturnSpeed, 0.65, 0.995);
-    _autoGuideOffset = Offset(
-      _autoGuideOffset.dx * keepFactor,
-      _autoGuideOffset.dy * keepFactor,
-    );
-    _autoOrbRotationDeg *= _clamp(keepFactor + 0.02, 0.67, 0.995);
-    _lastBalanceX = metrics.balanceX;
-    _lastBalanceY = metrics.balanceY;
-  }
-
-  void _onGuidePanUpdate(DragUpdateDetails details, Size size) {
-    if (!mounted) return;
-    final dx = details.delta.dx / (size.width * 0.5);
-    final dy = details.delta.dy / (size.height * 0.5);
-    setState(() {
-      _guideTouched = true;
-      _manualGuideOffset = Offset(
-        _clamp(
-          _manualGuideOffset.dx + dx,
-          -_maxManualGuideShift,
-          _maxManualGuideShift,
-        ),
-        _clamp(
-          _manualGuideOffset.dy + dy,
-          -_maxManualGuideShift,
-          _maxManualGuideShift,
-        ),
-      );
-    });
-  }
-
-  void _onGuideDoubleTap() {
-    if (!mounted) return;
-    setState(() {
-      _guideTouched = true;
-      _manualGuideOffset = Offset.zero;
-      _manualAngleOffsetDeg = 0;
-    });
-    _showSnack('Guia centrada.');
-  }
-
-  void _onGuideTapDown(TapDownDetails details, Size size) {
-    if (!mounted) return;
-    final center = Offset(
-      size.width / 2 + (_guideAlignment.dx * size.width * 0.25),
-      size.height / 2 + (_guideAlignment.dy * size.height * 0.25),
-    );
-    final vector = details.localPosition - center;
-    final distance = vector.distance;
-    final ringRadius = min(size.width, size.height) * 0.28;
-    final nearRing = (distance - ringRadius).abs() <= 42;
-
-    setState(() {
-      _guideTouched = true;
-      if (nearRing) {
-        final tappedDeg = (atan2(vector.dy, vector.dx) * 180 / pi + 360) % 360;
-        _manualAngleOffsetDeg = _signedAngleDelta(
-          _baseGuideAngleDeg.toDouble(),
-          tappedDeg,
-        );
-      } else {
-        _manualGuideOffset = Offset(
-          _clamp(
-            (details.localPosition.dx - (size.width / 2)) / (size.width * 0.5),
-            -_maxManualGuideShift,
-            _maxManualGuideShift,
-          ),
-          _clamp(
-            ((details.localPosition.dy - (size.height / 2)) /
-                    (size.height * 0.5)) -
-                _targetYOffset(widget.levelKey),
-            -_maxManualGuideShift,
-            _maxManualGuideShift,
-          ),
-        );
-      }
-    });
-  }
-
-  double _signedAngleDelta(double fromDeg, double toDeg) {
-    final delta = ((toDeg - fromDeg + 540) % 360) - 180;
-    return delta < -180 ? delta + 360 : delta;
-  }
-
-  double _clamp(double value, double minValue, double maxValue) {
-    return value.clamp(minValue, maxValue).toDouble();
   }
 
   Future<void> _takePicture() async {
-    if (!_canCapture) {
-      _showSnack('Mejora iluminacion o estabilidad.');
+    final controller = _controller;
+    if (!_isCaptureAllowed || controller == null) {
+      _handleBlockedShot();
       return;
     }
 
-    final controller = _controller;
-    if (controller == null) return;
-
     setState(() => _capturing = true);
-
     try {
       await _stopImageStreamIfNeeded();
       final shot = await controller.takePicture();
       if (!mounted) return;
-
+      final accepted = await _validateShot(shot.path);
+      if (!mounted) return;
+      if (!accepted) {
+        await _deleteIfExists(shot.path);
+        _showTemporaryGuidance(
+          const _GuidanceMessage(
+            text: 'Repite la toma',
+            color: Color(0xFFFFB347),
+            icon: Icons.replay_rounded,
+          ),
+        );
+        return;
+      }
+      final step = _nextStep;
       setState(() {
         _sessionShots.add(
           GuidedCameraShot(
             sourcePath: shot.path,
+            poseId: '${step.level.key}_${step.angleDeg}',
+            angleDeg: step.angleDeg,
+            level: step.level.key,
             brightness: _brightness,
             detail: _detail,
-            qualityOk: _qualityOk,
+            qualityOk: _quality == _SceneQuality.good,
           ),
         );
+        _showCaptureFx = true;
       });
-
-      if (_capturedTotal >= widget.targetMaxPhotos) {
-        _showSnack('Meta alcanzada. Puedes finalizar o seguir capturando.');
-      }
+      Future<void>.delayed(const Duration(milliseconds: 220), () {
+        if (!mounted) return;
+        setState(() => _showCaptureFx = false);
+      });
+      _showTemporaryGuidance(
+        const _GuidanceMessage(
+          text: 'Buena captura',
+          color: Color(0xFF57D684),
+          icon: Icons.check_circle_outline_rounded,
+        ),
+      );
     } catch (_) {
-      _showSnack('No se pudo tomar la foto.');
+      _showTemporaryGuidance(
+        const _GuidanceMessage(
+          text: 'No se pudo capturar la toma',
+          color: Color(0xFFFF7777),
+          icon: Icons.error_outline_rounded,
+        ),
+      );
     } finally {
-      if (mounted) {
-        setState(() => _capturing = false);
-      }
+      if (mounted) setState(() => _capturing = false);
       await _startImageStreamIfNeeded();
     }
   }
 
-  Future<void> _deleteShotAt(int index) async {
-    if (index < 0 || index >= _sessionShots.length) return;
-    final removed = _sessionShots.removeAt(index);
-    try {
-      final file = File(removed.sourcePath);
-      if (await file.exists()) {
-        await file.delete();
-      }
-    } catch (_) {
-      // best effort cleanup
-    }
+  void _handleBlockedShot() {
+    _showTemporaryGuidance(
+      _quality == _SceneQuality.critical
+          ? const _GuidanceMessage(
+              text: 'La escena aun no esta lista',
+              color: Color(0xFFFF7777),
+              icon: Icons.block_rounded,
+            )
+          : const _GuidanceMessage(
+              text: 'Espera una escena mas estable',
+              color: Color(0xFFFFB347),
+              icon: Icons.motion_photos_pause_rounded,
+            ),
+    );
   }
 
-  Future<void> _openShotActions(int index) async {
-    final action = await showModalBottomSheet<_SessionShotAction>(
+  Future<bool> _validateShot(String path) async {
+    final guidance = _activeGuidance;
+
+    final result = await showModalBottomSheet<bool>(
       context: context,
       builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.camera_alt_rounded),
-              title: const Text('Cambiar foto'),
-              onTap: () => Navigator.of(ctx).pop(_SessionShotAction.replace),
-            ),
-            ListTile(
-              leading: const Icon(Icons.delete_outline_rounded),
-              title: const Text('Eliminar foto'),
-              onTap: () => Navigator.of(ctx).pop(_SessionShotAction.delete),
-            ),
-          ],
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 6, 16, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Revision inmediata',
+                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 18),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                'Confirma si esta toma entra al lote actual.',
+                style: TextStyle(color: Colors.white70, fontSize: 12),
+              ),
+              const SizedBox(height: 10),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(16),
+                child: AspectRatio(
+                  aspectRatio: 1.35,
+                  child: Image.file(File(path), fit: BoxFit.cover),
+                ),
+              ),
+              const SizedBox(height: 12),
+              _GuidanceBanner(message: guidance, compact: true),
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _HudPill(
+                    label: 'Brillo',
+                    value: _brightness == null
+                        ? '--'
+                        : _brightness!.toStringAsFixed(0),
+                  ),
+                  _HudPill(
+                    label: 'Detalle',
+                    value: _detail == null ? '--' : _detail!.toStringAsFixed(0),
+                  ),
+                  _HudPill(
+                    label: 'Estabilidad',
+                    value: '${(_stability * 100).round()}%',
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.of(ctx).pop(false),
+                      child: const Text('Descartar'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: () => Navigator.of(ctx).pop(true),
+                      child: const Text('Guardar toma'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );
-
-    if (action == null || !mounted) return;
-    await _deleteShotAt(index);
-    if (!mounted) return;
-
-    setState(() {});
-    if (action == _SessionShotAction.replace) {
-      _showSnack('Foto eliminada. Toma una nueva para reemplazarla.');
-    } else {
-      _showSnack('Foto eliminada.');
-    }
+    return result == true;
   }
 
-  void _finishSession() {
-    if (!mounted) return;
-    Navigator.of(context).pop(
-      GuidedCameraSessionResult(
-        shots: List<GuidedCameraShot>.from(_sessionShots),
+  Future<void> _openSessionShotsSheet() async {
+    if (_sessionShots.isEmpty) {
+      _showTemporaryGuidance(
+        const _GuidanceMessage(
+          text: 'Aun no hay capturas en este lote',
+          color: Color(0xFFC3CAD9),
+          icon: Icons.photo_library_outlined,
+        ),
+      );
+      return;
+    }
+    await showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 6, 16, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Lote temporal',
+                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '${_sessionShots.length} capturas listas para guardarse en el proyecto.',
+                style: const TextStyle(color: Colors.white70, fontSize: 12),
+              ),
+              const SizedBox(height: 10),
+              SizedBox(
+                height: 104,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: _sessionShots.length,
+                  separatorBuilder: (_, _) => const SizedBox(width: 8),
+                  itemBuilder: (_, index) {
+                    final shot = _sessionShots[index];
+                    return GestureDetector(
+                      onLongPress: () => _removeShot(index),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(14),
+                        child: Image.file(
+                          File(shot.sourcePath),
+                          width: 96,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, _, _) => const ColoredBox(
+                            color: Color(0xFF101520),
+                            child: SizedBox(
+                              width: 96,
+                              child: Icon(Icons.broken_image_outlined),
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Manten pulsada una captura para eliminarla y repetir la toma.',
+                style: TextStyle(color: Colors.white70, fontSize: 12),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
 
-  void _showSnack(String message) {
+  Future<void> _removeShot(int index) async {
+    if (index < 0 || index >= _sessionShots.length) return;
+    final removed = _sessionShots.removeAt(index);
+    await _deleteIfExists(removed.sourcePath);
     if (!mounted) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
+    setState(() {});
+    _showTemporaryGuidance(
+      const _GuidanceMessage(
+        text: 'Repite la toma',
+        color: Color(0xFFFFB347),
+        icon: Icons.replay_rounded,
+      ),
+    );
   }
 
-  Future<void> _openGuideTuningSheet() async {
-    await showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: const Color(0xFF111216),
-      showDragHandle: true,
-      builder: (ctx) => StatefulBuilder(
-        builder: (context, setModalState) {
-          void update(void Function() mutate) {
-            mutate();
-            setModalState(() {});
-            if (mounted) setState(() {});
-          }
+  Future<void> _finishSession() async {
+    if (_sessionShots.isEmpty) {
+      _showTemporaryGuidance(
+        const _GuidanceMessage(
+          text: 'Toma al menos una captura antes de finalizar',
+          color: Color(0xFFC3CAD9),
+          icon: Icons.info_outline_rounded,
+        ),
+      );
+      return;
+    }
+    _submitted = true;
+    await _stopImageStreamIfNeeded();
+    if (!mounted) return;
+    Navigator.of(context).pop(GuidedCameraSessionResult(shots: _sessionShots));
+  }
 
-          String asPercent(double value) => '${(value * 100).round()}%';
+  void _showTemporaryGuidance(_GuidanceMessage message) {
+    _promptTimer?.cancel();
+    if (!mounted) return;
+    setState(() => _temporaryGuidance = message);
+    _promptTimer = Timer(const Duration(seconds: 2), () {
+      if (!mounted) return;
+      setState(() => _temporaryGuidance = null);
+    });
+  }
 
-          return SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Ajuste de guia',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 17,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  _TuningRow(
-                    label: 'Sensibilidad',
-                    value: asPercent(_guideSensitivity),
-                  ),
-                  Slider(
-                    value: _guideSensitivity,
-                    min: 0.45,
-                    max: 1.65,
-                    divisions: 24,
-                    onChanged: (value) =>
-                        update(() => _guideSensitivity = value),
-                  ),
-                  _TuningRow(
-                    label: 'Limite movimiento',
-                    value: asPercent(_guideAutoShiftLimit),
-                  ),
-                  Slider(
-                    value: _guideAutoShiftLimit,
-                    min: 0.10,
-                    max: 0.40,
-                    divisions: 15,
-                    onChanged: (value) =>
-                        update(() => _guideAutoShiftLimit = value),
-                  ),
-                  _TuningRow(
-                    label: 'Retorno al centro',
-                    value: asPercent(_guideReturnSpeed),
-                  ),
-                  Slider(
-                    value: _guideReturnSpeed,
-                    min: 0.01,
-                    max: 0.22,
-                    divisions: 21,
-                    onChanged: (value) =>
-                        update(() => _guideReturnSpeed = value),
-                  ),
-                  const SizedBox(height: 6),
-                  Row(
+  Future<void> _cleanupUnsavedShots() async {
+    for (final shot in _sessionShots) {
+      await _deleteIfExists(shot.sourcePath);
+    }
+  }
+
+  Future<void> _deleteIfExists(String path) async {
+    try {
+      final file = File(path);
+      if (await file.exists()) await file.delete();
+    } catch (_) {
+      // best effort
+    }
+  }
+}
+
+class _TopHud extends StatelessWidget {
+  const _TopHud({
+    required this.projectName,
+    required this.capturedTotal,
+    required this.targetMinPhotos,
+    required this.sessionShotCount,
+    required this.progress,
+    required this.onClose,
+  });
+
+  final String projectName;
+  final int capturedTotal;
+  final int targetMinPhotos;
+  final int sessionShotCount;
+  final double progress;
+  final VoidCallback? onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 8, 14, 0),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(10, 10, 10, 12),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.38),
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(color: Colors.white24),
+        ),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  onPressed: onClose,
+                  icon: const Icon(Icons.close_rounded, color: Colors.white),
+                ),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      TextButton.icon(
-                        onPressed: () => update(() {
-                          _guideSensitivity = _defaultGuideSensitivity;
-                          _guideAutoShiftLimit = _defaultAutoGuideShift;
-                          _guideReturnSpeed = _defaultGuideReturnSpeed;
-                        }),
-                        icon: const Icon(Icons.refresh_rounded),
-                        label: const Text('Restablecer'),
+                      Text(
+                        projectName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w700,
+                        ),
                       ),
-                      const Spacer(),
-                      FilledButton(
-                        onPressed: () => Navigator.of(ctx).pop(),
-                        child: const Text('Listo'),
+                      Text(
+                        '$capturedTotal / $targetMinPhotos objetivo minimo',
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 12,
+                        ),
                       ),
                     ],
                   ),
-                ],
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 7,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.07),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(color: Colors.white12),
+                  ),
+                  child: Text(
+                    '$sessionShotCount en lote',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(999),
+              child: LinearProgressIndicator(
+                value: progress,
+                minHeight: 5,
+                backgroundColor: Colors.white10,
+                valueColor: const AlwaysStoppedAnimation<Color>(
+                  Color(0xFF76A7FF),
+                ),
               ),
             ),
-          );
-        },
+          ],
+        ),
       ),
     );
   }
+}
 
-  double _targetYOffset(String levelKey) {
-    return switch (levelKey) {
-      'top' => -0.45,
-      'low' => 0.45,
-      _ => 0.0,
-    };
-  }
+class _GuidanceBanner extends StatelessWidget {
+  const _GuidanceBanner({required this.message, this.compact = false});
 
-  @override
-  void dispose() {
-    final controller = _controller;
-    _controller = null;
-    if (controller != null) {
-      if (_streaming) {
-        controller.stopImageStream().catchError((_) {});
-      }
-      controller.dispose();
-    }
-    super.dispose();
-  }
+  final _GuidanceMessage message;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
-    if (_initializing) {
-      return const Scaffold(
-        backgroundColor: Colors.black,
-        body: Center(child: CircularProgressIndicator()),
-      );
-    }
-
-    if (_errorText != null) {
-      return Scaffold(
-        backgroundColor: Colors.black,
-        body: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(_errorText!, style: const TextStyle(color: Colors.white)),
-                const SizedBox(height: 12),
-                FilledButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  child: const Text('Volver'),
-                ),
-              ],
-            ),
-          ),
-        ),
-      );
-    }
-
-    final controller = _controller;
-    if (controller == null) {
-      return const Scaffold(
-        backgroundColor: Colors.black,
-        body: Center(child: Text('Camara no disponible')),
-      );
-    }
-
-    return PopScope(
-      canPop: false,
-      onPopInvokedWithResult: (didPop, _) {
-        if (didPop) return;
-        _finishSession();
-      },
-      child: Scaffold(
-        backgroundColor: Colors.black,
-        body: Stack(
-          fit: StackFit.expand,
-          children: [
-            CameraPreview(controller),
-            Positioned.fill(
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final size = Size(
-                    constraints.maxWidth,
-                    constraints.maxHeight,
-                  );
-                  return GestureDetector(
-                    behavior: HitTestBehavior.translucent,
-                    onPanUpdate: (details) => _onGuidePanUpdate(details, size),
-                    onDoubleTap: _onGuideDoubleTap,
-                    onTapDown: (details) => _onGuideTapDown(details, size),
-                    child: Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        IgnorePointer(
-                          child: CustomPaint(
-                            painter: _GuideOrbPainter(
-                              capturedCount: _capturedTotal,
-                              targetCount: widget.targetMaxPhotos,
-                              alignmentOffset: _guideAlignment,
-                              rotationRad: _guideRotationRad,
-                            ),
-                            size: Size.infinite,
-                          ),
-                        ),
-                        IgnorePointer(
-                          child: _TargetReticle(
-                            alignmentOffset: _guideAlignment,
-                            levelLabel: widget.levelLabel,
-                            angleDeg: _guideAngleDeg,
-                          ),
-                        ),
-                        Positioned(
-                          top: 90,
-                          left: 0,
-                          right: 0,
-                          child: AnimatedOpacity(
-                            duration: const Duration(milliseconds: 220),
-                            opacity: _guideTouched ? 0.45 : 0.86,
-                            child: const Center(
-                              child: _GuideHintChip(
-                                text: 'Arrastra la guia. Doble toque para centrar.',
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                },
-              ),
-            ),
-            SafeArea(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _buildTopPanel(),
-                    const Spacer(),
-                    _buildBottomPanel(),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildTopPanel() {
-    return Column(
-      children: [
-        Row(
-          children: [
-            IconButton(
-              onPressed: _finishSession,
-              style: IconButton.styleFrom(
-                backgroundColor: Colors.black.withValues(alpha: 0.4),
-              ),
-              icon: const Icon(Icons.arrow_back_rounded, color: Colors.white),
-            ),
-            const Spacer(),
-            const Text(
-              'Camara Guiada',
-              style: TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.w700,
-                fontSize: 30 / 2,
-              ),
-            ),
-            const Spacer(),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                IconButton(
-                  onPressed: _openGuideTuningSheet,
-                  style: IconButton.styleFrom(
-                    backgroundColor: Colors.black.withValues(alpha: 0.4),
-                  ),
-                  icon: const Icon(Icons.tune_rounded, color: Colors.white),
-                ),
-                const SizedBox(width: 8),
-                IconButton(
-                  onPressed: () {
-                    _showSnack(
-                      'Arrastra la guia, toca el aro para orientar y usa doble toque para centrar.',
-                    );
-                  },
-                  style: IconButton.styleFrom(
-                    backgroundColor: Colors.black.withValues(alpha: 0.4),
-                  ),
-                  icon: const Icon(
-                    Icons.help_outline_rounded,
-                    color: Colors.white,
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-          decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.45),
-            border: Border.all(color: const Color(0xFF9A73FF), width: 2),
-            borderRadius: BorderRadius.circular(999),
-          ),
-          child: Text(
-            '$_capturedTotal / ${widget.targetMaxPhotos} fotos',
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 16,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildBottomPanel() {
-    final brightnessLabel = _hasMetrics
-        ? '${_brightness!.toStringAsFixed(0)}/255'
-        : 'calculando';
-    final detailLabel = _hasMetrics
-        ? _detail!.toStringAsFixed(1)
-        : 'calculando';
-
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(12),
+      padding: EdgeInsets.symmetric(
+        horizontal: compact ? 12 : 14,
+        vertical: compact ? 10 : 12,
+      ),
       decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.56),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white24),
+        color: message.color.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(compact ? 16 : 18),
+        border: Border.all(color: message.color.withValues(alpha: 0.28)),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
         children: [
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              _StatusPill(
-                label: 'Luz',
-                value: brightnessLabel,
-                ok: _hasMetrics ? _brightnessOk : true,
-              ),
-              _StatusPill(
-                label: 'Nitidez',
-                value: detailLabel,
-                ok: _hasMetrics ? _detailOk : true,
-              ),
-              _StatusPill(
-                label: 'Asistencia',
-                value: _assistEnabled ? 'on' : 'off',
-                ok: !_assistEnabled || _qualityOk,
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text(
-            _assistEnabled && !_qualityOk
-                ? 'Mejora iluminacion o estabilidad.'
-                : 'Buena iluminacion.',
-            style: TextStyle(
-              color: _assistEnabled && !_qualityOk
-                  ? Colors.orangeAccent
-                  : Colors.white70,
-            ),
-          ),
-          const SizedBox(height: 8),
-          _buildSessionStrip(),
-          const SizedBox(height: 8),
-          const Text(
-            'Toca una miniatura para cambiar o eliminar la foto.',
-            style: TextStyle(color: Colors.white70, fontSize: 12),
-          ),
-          const SizedBox(height: 12),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              IconButton(
-                onPressed: () =>
-                    setState(() => _assistEnabled = !_assistEnabled),
-                style: IconButton.styleFrom(
-                  backgroundColor: Colors.white24,
-                  foregroundColor: Colors.white,
-                ),
-                icon: Icon(
-                  _assistEnabled
-                      ? Icons.assistant_photo_rounded
-                      : Icons.assistant_photo_outlined,
-                ),
-              ),
-              GestureDetector(
-                onTap: _canCapture ? _takePicture : null,
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 180),
-                  width: 92,
-                  height: 92,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    border: Border.all(
-                      color: _canCapture ? Colors.white : Colors.white38,
-                      width: 4,
-                    ),
-                    gradient: _canCapture
-                        ? const LinearGradient(
-                            colors: [Color(0xFF7B61FF), Color(0xFF3E31B8)],
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                          )
-                        : null,
-                    color: !_canCapture ? Colors.white24 : null,
-                  ),
-                  child: _capturing
-                      ? const Padding(
-                          padding: EdgeInsets.all(24),
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2.2,
-                            color: Colors.white,
-                          ),
-                        )
-                      : const Icon(
-                          Icons.camera_alt_rounded,
-                          color: Colors.white,
-                          size: 34,
-                        ),
-                ),
-              ),
-              IconButton(
-                onPressed: _finishSession,
-                style: IconButton.styleFrom(
-                  backgroundColor: Colors.white24,
-                  foregroundColor: Colors.white,
-                ),
-                icon: const Icon(Icons.check_rounded),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSessionStrip() {
-    if (_sessionShots.isEmpty) {
-      return Container(
-        width: double.infinity,
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-        decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.08),
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: const Text(
-          'Aun no hay fotos en la sesion.',
-          style: TextStyle(color: Colors.white70, fontSize: 12),
-        ),
-      );
-    }
-
-    return SizedBox(
-      height: 64,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        itemCount: _sessionShots.length,
-        separatorBuilder: (_, _) => const SizedBox(width: 8),
-        itemBuilder: (_, index) {
-          final shot = _sessionShots[index];
-          return GestureDetector(
-            onTap: () => _openShotActions(index),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: Stack(
-                children: [
-                  Image.file(
-                    File(shot.sourcePath),
-                    width: 62,
-                    height: 62,
-                    fit: BoxFit.cover,
-                    cacheWidth: 160,
-                    cacheHeight: 160,
-                    errorBuilder: (_, _, _) =>
-                        const SizedBox(width: 62, height: 62),
-                  ),
-                  Positioned(
-                    right: 4,
-                    top: 4,
-                    child: Container(
-                      width: 18,
-                      height: 18,
-                      decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.55),
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(
-                        Icons.edit_rounded,
-                        size: 12,
-                        color: Colors.white,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          );
-        },
-      ),
-    );
-  }
-}
-
-class _TargetReticle extends StatelessWidget {
-  const _TargetReticle({
-    required this.alignmentOffset,
-    required this.levelLabel,
-    required this.angleDeg,
-  });
-
-  final Offset alignmentOffset;
-  final String levelLabel;
-  final int angleDeg;
-
-  @override
-  Widget build(BuildContext context) {
-    return Align(
-      alignment: Alignment(alignmentOffset.dx, alignmentOffset.dy),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          SizedBox(
-            width: 180,
-            height: 180,
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                Container(
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.white70, width: 2),
-                  ),
-                ),
-                Center(
-                  child: Container(width: 32, height: 2, color: Colors.white70),
-                ),
-                Center(
-                  child: Container(width: 2, height: 32, color: Colors.white70),
-                ),
-                Positioned(
-                  right: 14,
-                  bottom: 14,
-                  child: Container(
-                    width: 26,
-                    height: 26,
-                    decoration: BoxDecoration(
-                      color: Colors.black.withValues(alpha: 0.45),
-                      shape: BoxShape.circle,
-                      border: Border.all(color: Colors.white24),
-                    ),
-                    child: const Icon(
-                      Icons.open_with_rounded,
-                      size: 14,
-                      color: Colors.white70,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            decoration: BoxDecoration(
-              color: Colors.black.withValues(alpha: 0.52),
-              borderRadius: BorderRadius.circular(10),
-            ),
+          Icon(message.icon, size: 18, color: message.color),
+          const SizedBox(width: 8),
+          Expanded(
             child: Text(
-              '$levelLabel | $angleDeg deg',
-              style: const TextStyle(color: Colors.white, fontSize: 12),
+              message.text,
+              style: TextStyle(
+                color: compact ? Colors.white : message.color,
+                fontSize: compact ? 12 : 13,
+                fontWeight: FontWeight.w700,
+              ),
             ),
           ),
         ],
@@ -1105,151 +1049,149 @@ class _TargetReticle extends StatelessWidget {
   }
 }
 
-class _StatusPill extends StatelessWidget {
-  const _StatusPill({
-    required this.label,
-    required this.value,
-    required this.ok,
-  });
+class _HudPill extends StatelessWidget {
+  const _HudPill({required this.label, required this.value});
 
   final String label;
   final String value;
-  final bool ok;
 
   @override
   Widget build(BuildContext context) {
-    final color = ok ? Colors.greenAccent.shade400 : Colors.orangeAccent;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
       decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.35),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: color.withValues(alpha: 0.6)),
+        color: Colors.black.withValues(alpha: 0.36),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: Colors.white12),
       ),
-      child: Text(
-        '$label: $value',
-        style: TextStyle(
-          color: color,
-          fontSize: 11,
-          fontWeight: FontWeight.w600,
+      child: RichText(
+        text: TextSpan(
+          style: const TextStyle(color: Colors.white, fontSize: 12),
+          children: [
+            TextSpan(
+              text: '$label ',
+              style: const TextStyle(color: Colors.white70),
+            ),
+            TextSpan(
+              text: value,
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
+          ],
         ),
       ),
     );
   }
 }
 
-class _GuideHintChip extends StatelessWidget {
-  const _GuideHintChip({required this.text});
+class _ControlButton extends StatelessWidget {
+  const _ControlButton({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.emphasized = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  final bool emphasized;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 56,
+      child: ElevatedButton.icon(
+        style: ElevatedButton.styleFrom(
+          backgroundColor: emphasized
+              ? const Color(0xFF76A7FF)
+              : Colors.black.withValues(alpha: 0.36),
+          foregroundColor: Colors.white,
+          elevation: 0,
+          side: BorderSide(
+            color: emphasized ? Colors.transparent : Colors.white12,
+          ),
+        ),
+        onPressed: onTap,
+        icon: Icon(icon),
+        label: Text(label),
+      ),
+    );
+  }
+}
+
+class _ShutterButton extends StatelessWidget {
+  const _ShutterButton({required this.enabled, required this.capturing});
+
+  final bool enabled;
+  final bool capturing;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 180),
+      width: 108,
+      height: 108,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: enabled ? Colors.white.withValues(alpha: 0.08) : Colors.white10,
+        border: Border.all(
+          color: enabled ? Colors.white : Colors.white30,
+          width: 3,
+        ),
+        boxShadow: [
+          if (enabled)
+            BoxShadow(
+              color: const Color(0xFF76A7FF).withValues(alpha: 0.3),
+              blurRadius: 26,
+            ),
+        ],
+      ),
+      child: Center(
+        child: Container(
+          width: 72,
+          height: 72,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: enabled
+                  ? const [Colors.white, Color(0xFFE7F0FF)]
+                  : [Colors.white38, Colors.white24],
+            ),
+          ),
+          child: Center(
+            child: capturing
+                ? const SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.black,
+                    ),
+                  )
+                : Icon(
+                    Icons.camera_alt_rounded,
+                    color: enabled ? Colors.black : Colors.black54,
+                    size: 30,
+                  ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _GuidanceMessage {
+  const _GuidanceMessage({
+    required this.text,
+    required this.color,
+    required this.icon,
+  });
 
   final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.42),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: Colors.white24),
-      ),
-      child: Text(
-        text,
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 11,
-          fontWeight: FontWeight.w500,
-        ),
-      ),
-    );
-  }
-}
-
-class _TuningRow extends StatelessWidget {
-  const _TuningRow({required this.label, required this.value});
-
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Expanded(
-          child: Text(
-            label,
-            style: const TextStyle(color: Colors.white, fontSize: 13),
-          ),
-        ),
-        Text(
-          value,
-          style: const TextStyle(
-            color: Colors.white70,
-            fontSize: 12,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _GuideOrbPainter extends CustomPainter {
-  _GuideOrbPainter({
-    required this.capturedCount,
-    required this.targetCount,
-    required this.alignmentOffset,
-    required this.rotationRad,
-  });
-
-  final int capturedCount;
-  final int targetCount;
-  final Offset alignmentOffset;
-  final double rotationRad;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final center = Offset(
-      (size.width / 2) + (alignmentOffset.dx * size.width * 0.25),
-      (size.height / 2) + (alignmentOffset.dy * size.height * 0.25),
-    );
-    final radius = min(size.width, size.height) * 0.28;
-
-    final ring = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.2
-      ..color = Colors.white30;
-    canvas.drawCircle(center, radius, ring);
-    canvas.drawOval(
-      Rect.fromCenter(center: center, width: radius * 2, height: radius * 1.1),
-      ring,
-    );
-    canvas.drawOval(
-      Rect.fromCenter(center: center, width: radius * 1.3, height: radius * 2),
-      ring,
-    );
-
-    final points = min(max(targetCount, 12), 80);
-    for (int i = 0; i < points; i++) {
-      final angle = ((i / points) * pi * 2) + rotationRad;
-      final p = Offset(
-        center.dx + cos(angle) * radius,
-        center.dy + sin(angle) * (radius * 0.62),
-      );
-      final done = i < capturedCount;
-      final paint = Paint()
-        ..style = PaintingStyle.fill
-        ..color = done ? const Color(0xFF7B61FF) : Colors.white30;
-      canvas.drawCircle(p, done ? 4.4 : 3.2, paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _GuideOrbPainter oldDelegate) {
-    return oldDelegate.capturedCount != capturedCount ||
-        oldDelegate.targetCount != targetCount ||
-        oldDelegate.alignmentOffset != alignmentOffset ||
-        oldDelegate.rotationRad != rotationRad;
-  }
+  final Color color;
+  final IconData icon;
 }
 
 class _FrameMetrics {

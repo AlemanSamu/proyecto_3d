@@ -10,9 +10,7 @@ abstract class CameraCaptureService {
 /// controller. It can also be reused by guided flows through
 /// [createBackCameraController] + [takePictureWithController].
 class DeviceCameraCaptureService implements CameraCaptureService {
-  DeviceCameraCaptureService({
-    this.resolutionPreset = ResolutionPreset.high,
-  });
+  DeviceCameraCaptureService({this.resolutionPreset = ResolutionPreset.high});
 
   final ResolutionPreset resolutionPreset;
 

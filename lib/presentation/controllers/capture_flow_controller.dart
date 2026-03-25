@@ -45,6 +45,13 @@ class CaptureFlowController {
     required bool autoQuality,
     required Future<bool> Function(PhotoQualityReport report)
     confirmLowQualitySave,
+    String? poseId,
+    int? angleDeg,
+    String? level,
+    double? brightness,
+    double? sharpness,
+    bool accepted = true,
+    bool flaggedForRetake = false,
   }) async {
     final permission = await _permissionService.request();
     final granted =
@@ -71,6 +78,13 @@ class CaptureFlowController {
       sourcePath: sourcePath,
       autoQuality: autoQuality,
       confirmLowQualitySave: confirmLowQualitySave,
+      poseId: poseId,
+      angleDeg: angleDeg,
+      level: level,
+      brightness: brightness,
+      sharpness: sharpness,
+      accepted: accepted,
+      flaggedForRetake: flaggedForRetake,
     );
   }
 
@@ -80,11 +94,20 @@ class CaptureFlowController {
     required bool autoQuality,
     required Future<bool> Function(PhotoQualityReport report)
     confirmLowQualitySave,
+    String? poseId,
+    int? angleDeg,
+    String? level,
+    double? brightness,
+    double? sharpness,
+    bool accepted = true,
+    bool flaggedForRetake = false,
   }) async {
+    PhotoQualityReport? qualityReport;
+
     if (autoQuality) {
-      final report = await _qualityAnalyzer.analyze(sourcePath);
-      if (!report.isOk) {
-        final keep = await confirmLowQualitySave(report);
+      qualityReport = await _qualityAnalyzer.analyze(sourcePath);
+      if (!qualityReport.isOk) {
+        final keep = await confirmLowQualitySave(qualityReport);
         if (!keep) {
           return const CaptureFlowResult(message: 'Captura descartada.');
         }
@@ -101,7 +124,17 @@ class CaptureFlowController {
       );
     }
 
-    _projectsNotifier.addImagePath(projectId, localPath);
+    _projectsNotifier.addImagePath(
+      projectId,
+      localPath,
+      poseId: poseId,
+      angleDeg: angleDeg,
+      level: level,
+      brightness: brightness ?? qualityReport?.brightness ?? 0,
+      sharpness: sharpness ?? qualityReport?.sharpness ?? 0,
+      accepted: accepted,
+      flaggedForRetake: flaggedForRetake,
+    );
 
     final savedToGallery = await _gallerySaver.saveImage(localPath);
     if (!savedToGallery) {

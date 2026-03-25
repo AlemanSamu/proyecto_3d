@@ -31,7 +31,7 @@ class InMemoryProjectRepository implements ProjectRepository {
 Widget _buildApp(InMemoryProjectRepository repo) {
   return ProviderScope(
     overrides: [projectRepositoryProvider.overrideWithValue(repo)],
-    child: const MaterialApp(home: CaptureScreen()),
+    child: const MaterialApp(home: Scaffold(body: CaptureScreen())),
   );
 }
 
@@ -39,32 +39,32 @@ void main() {
   testWidgets('muestra secciones base del modulo de captura', (tester) async {
     final repo = InMemoryProjectRepository();
     await tester.pumpWidget(_buildApp(repo));
-    await tester.pump();
+    await tester.pumpAndSettle();
 
-    expect(find.text('Modulo de captura'), findsOneWidget);
-    expect(find.text('Guia rapida'), findsOneWidget);
-    expect(find.text('Asistencia en vivo'), findsOneWidget);
-    expect(find.text('Proyecto activo'), findsOneWidget);
+    expect(find.text('Captura guiada'), findsOneWidget);
+    expect(find.text('Sesion activa'), findsOneWidget);
+    await tester.scrollUntilVisible(find.text('Camara guiada'), 250);
+    await tester.pumpAndSettle();
+    expect(find.text('Camara guiada'), findsOneWidget);
   });
 
   testWidgets('permite crear proyecto y dejarlo activo', (tester) async {
     final repo = InMemoryProjectRepository();
     await tester.pumpWidget(_buildApp(repo));
-    await tester.pump();
+    await tester.pumpAndSettle();
 
     await tester.tap(find.text('Nuevo proyecto'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 50));
+    await tester.pumpAndSettle();
     expect(find.text('Nombre del proyecto'), findsOneWidget);
 
-    await tester.enterText(find.byType(TextField), 'Mesa prueba');
+    await tester.enterText(find.byType(TextField).first, 'Mesa prueba');
     await tester.tap(find.text('Crear'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 50));
+    await tester.pumpAndSettle();
 
-    expect(find.text('Seleccionar proyecto'), findsOneWidget);
+    expect(find.text('Proyecto activo'), findsOneWidget);
     expect(find.textContaining('Mesa prueba'), findsWidgets);
-    expect(find.textContaining('estado: capturing'), findsOneWidget);
+    expect(find.text('Borrador'), findsOneWidget);
+    expect(find.text('Comenzar captura'), findsWidgets);
   });
 
   testWidgets('muestra proyecto existente y acciones principales', (
@@ -81,9 +81,9 @@ void main() {
     final repo = InMemoryProjectRepository(initial: [project]);
 
     await tester.pumpWidget(_buildApp(repo));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 50));
-    expect(find.text('Seleccionar proyecto'), findsOneWidget);
-    expect(find.textContaining('estado: capturing'), findsOneWidget);
+    await tester.pumpAndSettle();
+    expect(find.text('Proyecto activo'), findsOneWidget);
+    expect(find.text('Escaneo demo'), findsOneWidget);
+    expect(find.text('Capturando'), findsOneWidget);
   });
 }

@@ -32,46 +32,39 @@ class _HomeActionCardState extends State<HomeActionCard> {
         duration: const Duration(milliseconds: 180),
         curve: Curves.easeOut,
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(20),
-          gradient: LinearGradient(
-            colors: [
-              colors.surface,
-              colors.surfaceContainerHighest.withValues(alpha: 0.36),
-            ],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
+          borderRadius: BorderRadius.circular(22),
+          color: colors.surface.withValues(alpha: 0.88),
           boxShadow: [
             BoxShadow(
-              blurRadius: 18,
-              offset: const Offset(0, 10),
-              color: Colors.black.withValues(alpha: 0.35),
+              blurRadius: 14,
+              offset: const Offset(0, 8),
+              color: Colors.black.withValues(alpha: 0.18),
             ),
           ],
           border: Border.all(
-            color: colors.outlineVariant.withValues(alpha: 0.4),
+            color: colors.outlineVariant.withValues(alpha: 0.34),
           ),
         ),
         child: Material(
           color: Colors.transparent,
           child: InkWell(
-            borderRadius: BorderRadius.circular(20),
+            borderRadius: BorderRadius.circular(22),
             onTap: widget.onTap,
             onTapDown: (_) => setState(() => _pressed = true),
             onTapCancel: () => setState(() => _pressed = false),
             onTapUp: (_) => setState(() => _pressed = false),
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 15),
               child: Row(
                 children: [
                   Container(
-                    width: 52,
-                    height: 52,
+                    width: 46,
+                    height: 46,
                     decoration: BoxDecoration(
                       color: colors.primary.withValues(alpha: 0.16),
-                      borderRadius: BorderRadius.circular(14),
+                      borderRadius: BorderRadius.circular(15),
                     ),
-                    child: Icon(widget.icon, color: colors.primary, size: 26),
+                    child: Icon(widget.icon, color: colors.primary, size: 22),
                   ),
                   const SizedBox(width: 14),
                   Expanded(
@@ -85,14 +78,17 @@ class _HomeActionCardState extends State<HomeActionCard> {
                         const SizedBox(height: 4),
                         Text(
                           widget.subtitle,
-                          style: Theme.of(context).textTheme.bodyMedium
+                          style: Theme.of(context).textTheme.bodySmall
                               ?.copyWith(color: Colors.white70),
                         ),
                       ],
                     ),
                   ),
                   const SizedBox(width: 8),
-                  Icon(Icons.chevron_right_rounded, color: colors.primary),
+                  Icon(
+                    Icons.chevron_right_rounded,
+                    color: colors.primary.withValues(alpha: 0.88),
+                  ),
                 ],
               ),
             ),

@@ -82,9 +82,13 @@ class HistoryScreen extends ConsumerWidget {
 
   Color _statusColor(ProjectStatus status, ThemeData theme) {
     return switch (status) {
+      ProjectStatus.draft => const Color(0xFF9AA5BD),
       ProjectStatus.capturing => theme.colorScheme.primary,
+      ProjectStatus.reviewReady => const Color(0xFF8F7BFF),
+      ProjectStatus.readyToProcess => const Color(0xFF4D92FF),
       ProjectStatus.processing => Colors.orangeAccent,
-      ProjectStatus.done => Colors.lightGreenAccent,
+      ProjectStatus.modelGenerated => const Color(0xFF41D4B8),
+      ProjectStatus.exported => Colors.lightGreenAccent,
       ProjectStatus.error => Colors.redAccent,
     };
   }

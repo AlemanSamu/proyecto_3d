@@ -63,7 +63,7 @@ void main() {
       createdAt: DateTime.parse('2026-03-02T12:00:00.000Z'),
       imagePaths: const ['/tmp/mid_0.jpg'],
       modelPath: '/tmp/model.glb',
-      status: ProjectStatus.done,
+      status: ProjectStatus.modelGenerated,
     );
 
     final roundTrip = ProjectModel.fromJson(project.toJson());
