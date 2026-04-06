@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:proyecto_3d/data/services/local_backend_api_service.dart';
@@ -11,14 +12,14 @@ import 'package:proyecto_3d/domain/settings/local_server_config.dart';
 
 void main() {
   test('flujo remoto end-to-end con PROCESAMIENTO', () async {
-    print('[E2E] iniciando test');
+    debugPrint('[E2E] iniciando test');
     final docsDir = Directory.systemTemp.createTempSync('proyecto_3d_docs_');
     addTearDown(() async {
       if (await docsDir.exists()) {
         await docsDir.delete(recursive: true);
       }
     });
-    print('[E2E] directorio temporal listo: ${docsDir.path}');
+    debugPrint('[E2E] directorio temporal listo: ${docsDir.path}');
 
     final service = LocalBackendApiService(
       config: const LocalServerConfig(
@@ -29,14 +30,14 @@ void main() {
       documentsDirectoryProvider: () async => docsDir,
     );
     addTearDown(service.dispose);
-    print('[E2E] servicio creado');
+    debugPrint('[E2E] servicio creado');
 
     final health = await service.ping();
-    print('[E2E] health: $health');
+    debugPrint('[E2E] health: $health');
     expect(health, contains('127.0.0.1:8000'));
 
     final localProjectId = 'local_${DateTime.now().millisecondsSinceEpoch}';
-    print('[E2E] creando proyecto: $localProjectId');
+    debugPrint('[E2E] creando proyecto: $localProjectId');
     final remoteProjectId = await service.createProject(
       localProjectId: localProjectId,
       name: 'E2E remoto',
@@ -46,7 +47,7 @@ void main() {
       ),
       processingConfig: const ProjectProcessingConfig(),
     );
-    print('[E2E] proyecto remoto: $remoteProjectId');
+    debugPrint('[E2E] proyecto remoto: $remoteProjectId');
     expect(remoteProjectId, isNotEmpty);
 
     final imageDir = Directory(
@@ -61,19 +62,19 @@ void main() {
       await file.writeAsBytes(List<int>.generate(128, (i) => (i + index) % 256));
       imagePaths.add(file.path);
     }
-    print('[E2E] imagenes creadas: ${imagePaths.length}');
+    debugPrint('[E2E] imagenes creadas: ${imagePaths.length}');
 
-    print('[E2E] subiendo imagenes');
+    debugPrint('[E2E] subiendo imagenes');
     await service.uploadImages(
       remoteProjectId: remoteProjectId,
       imagePaths: imagePaths,
     );
-    print('[E2E] upload completo');
+    debugPrint('[E2E] upload completo');
 
     final statusAfterUploadResponse = await http.get(
       Uri.parse('http://127.0.0.1:8000/projects/$remoteProjectId/status'),
     );
-    print('[E2E] status tras upload: ${statusAfterUploadResponse.statusCode}');
+    debugPrint('[E2E] status tras upload: ${statusAfterUploadResponse.statusCode}');
     expect(statusAfterUploadResponse.statusCode, 200);
     final statusAfterUploadJson = jsonDecode(
       statusAfterUploadResponse.body,
@@ -84,13 +85,13 @@ void main() {
     final statusBeforeProcessing = await service.fetchStatus(
       remoteProjectId: remoteProjectId,
     );
-    print('[E2E] status antes de procesar: ${statusBeforeProcessing.rawStatus}');
+    debugPrint('[E2E] status antes de procesar: ${statusBeforeProcessing.rawStatus}');
     expect(statusBeforeProcessing.rawStatus.toLowerCase(), 'ready');
     expect(statusBeforeProcessing.isCompleted, isFalse);
     expect(statusBeforeProcessing.isActive, isTrue);
     expect(statusBeforeProcessing.stage, ProcessingStage.queued);
 
-    print('[E2E] iniciando procesamiento');
+    debugPrint('[E2E] iniciando procesamiento');
     await service.startProcessing(
       remoteProjectId: remoteProjectId,
       exportConfig: const ProjectExportConfig(
@@ -98,27 +99,27 @@ void main() {
       ),
       processingConfig: const ProjectProcessingConfig(),
     );
-    print('[E2E] proceso iniciado');
+    debugPrint('[E2E] proceso iniciado');
 
-    print('[E2E] esperando estado terminal');
+    debugPrint('[E2E] esperando estado terminal');
     final completed = await _waitForTerminalStatus(
       service,
       remoteProjectId,
       timeout: const Duration(seconds: 30),
     );
-    print('[E2E] estado terminal: ${completed.rawStatus}');
+    debugPrint('[E2E] estado terminal: ${completed.rawStatus}');
     expect(completed.isFailed, isFalse);
     expect(completed.isCompleted, isTrue);
     expect(completed.modelUrl, isNotNull);
 
-    print('[E2E] descargando modelo');
+    debugPrint('[E2E] descargando modelo');
     final modelPath = await service.downloadModelToProject(
       remoteProjectId: remoteProjectId,
       localProjectId: localProjectId,
       preferredFormat: 'glb',
       preferredModelUrl: completed.modelUrl,
     );
-    print('[E2E] modelo descargado: $modelPath');
+    debugPrint('[E2E] modelo descargado: $modelPath');
     final modelFile = File(modelPath);
     expect(await modelFile.exists(), isTrue);
     final modelBytes = await modelFile.readAsBytes();

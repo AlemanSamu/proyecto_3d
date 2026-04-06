@@ -339,7 +339,7 @@ class LocalBackendApiService {
     required String extension,
   }) async {
     final docs = _documentsDirectoryProvider != null
-        ? await _documentsDirectoryProvider!()
+        ? await _documentsDirectoryProvider()
         : await getApplicationDocumentsDirectory();
     final modelsDir = Directory(
       '${docs.path}${Platform.pathSeparator}generated_models'
