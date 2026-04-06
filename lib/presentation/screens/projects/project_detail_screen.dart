@@ -15,7 +15,7 @@ import '../../widgets/status_badge.dart';
 import '../capture/capture_screen.dart';
 import 'capture_photo_preview_screen.dart';
 import 'capture_review_screen.dart';
-import 'export_configuration_screen.dart';
+import '../export_workbench_screen.dart';
 
 class ProjectDetailScreen extends ConsumerWidget {
   const ProjectDetailScreen({super.key, required this.projectId});
@@ -218,7 +218,7 @@ class _MainActions extends StatelessWidget {
                   onPressed: () {
                     Navigator.of(context).push(
                       MaterialPageRoute(
-                        builder: (_) => ExportConfigurationScreen(projectId: project.id),
+                        builder: (_) => ExportWorkbenchScreen(projectId: project.id),
                       ),
                     );
                   },
@@ -232,7 +232,7 @@ class _MainActions extends StatelessWidget {
                   onPressed: () {
                     Navigator.of(context).push(
                       MaterialPageRoute(
-                        builder: (_) => ExportConfigurationScreen(projectId: project.id),
+                        builder: (_) => ExportWorkbenchScreen(projectId: project.id),
                       ),
                     );
                   },

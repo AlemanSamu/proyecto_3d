@@ -13,7 +13,9 @@ import '../../domain/projects/project_coverage_summary.dart';
 import '../../domain/projects/project_export_config.dart';
 import '../../domain/projects/project_model.dart';
 import '../../domain/projects/project_processing.dart';
+import '../controllers/project_backend_controller.dart';
 import '../controllers/project_export_controller.dart';
+import 'settings_providers.dart';
 
 final projectRepositoryProvider = Provider<ProjectRepository>((ref) {
   return LocalProjectRepository();
@@ -63,6 +65,20 @@ final projectExportControllerProvider = Provider<ProjectExportController>((
     updateProcessingState: notifier.updateProcessingState,
     setModelPath: notifier.setModelPath,
     setLastExportPackagePath: notifier.setLastExportPackagePath,
+  );
+});
+
+final projectBackendControllerProvider = Provider<ProjectBackendController>((
+  ref,
+) {
+  final notifier = ref.read(projectsProvider.notifier);
+  return ProjectBackendController(
+    apiService: ref.read(localBackendApiServiceProvider),
+    updateStatus: notifier.updateStatus,
+    updateProcessingState: notifier.updateProcessingState,
+    setModelPath: notifier.setModelPath,
+    setRemoteProjectId: notifier.setRemoteProjectId,
+    updateRemoteSyncState: notifier.updateRemoteSyncState,
   );
 });
 
@@ -120,6 +136,10 @@ class ProjectsNotifier extends StateNotifier<List<ProjectModel>> {
       poses: const {},
       coverage: ProjectCoverageSummary.fromPhotos(const []),
       modelPath: null,
+      remoteProjectId: null,
+      remoteModelUrl: null,
+      remoteStatus: null,
+      remoteErrorMessage: null,
     );
 
     state = [project, ...state];
@@ -380,6 +400,38 @@ class ProjectsNotifier extends StateNotifier<List<ProjectModel>> {
                 message: 'Modelo generado',
                 updatedAt: DateTime.now(),
               ),
+        updatedAt: DateTime.now(),
+      );
+    });
+  }
+
+  void setRemoteProjectId(String projectId, String? remoteProjectId) {
+    _updateProject(projectId, (project) {
+      return project.copyWith(
+        remoteProjectId: remoteProjectId,
+        clearRemoteProjectId: remoteProjectId == null,
+        updatedAt: DateTime.now(),
+      );
+    });
+  }
+
+  void updateRemoteSyncState(
+    String projectId, {
+    String? remoteStatus,
+    bool clearRemoteStatus = false,
+    String? remoteModelUrl,
+    bool clearRemoteModelUrl = false,
+    String? remoteErrorMessage,
+    bool clearRemoteErrorMessage = false,
+  }) {
+    _updateProject(projectId, (project) {
+      return project.copyWith(
+        remoteStatus: remoteStatus,
+        clearRemoteStatus: clearRemoteStatus,
+        remoteModelUrl: remoteModelUrl,
+        clearRemoteModelUrl: clearRemoteModelUrl,
+        remoteErrorMessage: remoteErrorMessage,
+        clearRemoteErrorMessage: clearRemoteErrorMessage,
         updatedAt: DateTime.now(),
       );
     });

@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../../../core/services/camera_permission_service.dart';
 import '../../../data/capture/camera_capture_service.dart';
@@ -43,9 +44,11 @@ class _CaptureScreenState extends ConsumerState<CaptureScreen> {
 
   final _permissionService = CameraPermissionService();
   late final CaptureFlowController _captureController;
+  final _galleryPicker = ImagePicker();
 
   String? _activeProjectId;
   bool _capturing = false;
+  bool _importing = false;
   bool _requireLiveQuality = true;
 
   @override
@@ -107,7 +110,9 @@ class _CaptureScreenState extends ConsumerState<CaptureScreen> {
           targetMaxPhotos: _targetMaxPhotos,
           requireLiveQuality: _requireLiveQuality,
           capturing: _capturing,
+          importing: _importing,
           onCapture: () => _capture(activeProject),
+          onPickImages: () => _pickImagesFromGallery(activeProject),
         ),
         if (activeProject != null) ...[
           const SizedBox(height: 12),
@@ -289,6 +294,38 @@ class _CaptureScreenState extends ConsumerState<CaptureScreen> {
     }
   }
 
+  Future<void> _pickImagesFromGallery(ProjectModel? project) async {
+    if (_importing || project == null) return;
+
+    final picked = await _galleryPicker.pickMultiImage(
+      imageQuality: 94,
+      requestFullMetadata: false,
+    );
+    if (!mounted || picked.isEmpty) return;
+
+    setState(() => _importing = true);
+    try {
+      int savedCount = 0;
+      for (final image in picked) {
+        final result = await _captureController.processCapturedFile(
+          projectId: project.id,
+          sourcePath: image.path,
+          autoQuality: false,
+          confirmLowQualitySave: (_) async => true,
+        );
+        if (result.saved) savedCount++;
+      }
+
+      if (!mounted) return;
+      _showSnack('Importadas $savedCount de ${picked.length} imagenes.');
+    } catch (_) {
+      if (!mounted) return;
+      _showSnack('No se pudieron importar imagenes desde galeria.');
+    } finally {
+      if (mounted) setState(() => _importing = false);
+    }
+  }
+
   void _showSnack(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(
@@ -429,7 +466,9 @@ class _CameraLaunchCard extends StatelessWidget {
     required this.targetMaxPhotos,
     required this.requireLiveQuality,
     required this.capturing,
+    required this.importing,
     required this.onCapture,
+    required this.onPickImages,
   });
 
   final ProjectModel? activeProject;
@@ -438,7 +477,9 @@ class _CameraLaunchCard extends StatelessWidget {
   final int targetMaxPhotos;
   final bool requireLiveQuality;
   final bool capturing;
+  final bool importing;
   final VoidCallback onCapture;
+  final VoidCallback onPickImages;
 
   List<int> get _capturedSectors {
     if (activeProject == null) return const [];
@@ -459,6 +500,7 @@ class _CameraLaunchCard extends StatelessWidget {
         ? 0.0
         : (captured / targetMinPhotos).clamp(0.0, 1.0);
     final canCapture = activeProject != null && !capturing;
+    final canImport = activeProject != null && !capturing && !importing;
     final actionLabel = activeProject == null
         ? 'Selecciona un proyecto'
         : captured == 0
@@ -568,22 +610,39 @@ class _CameraLaunchCard extends StatelessWidget {
           ).textTheme.bodySmall?.copyWith(color: Colors.white70),
         ),
         const SizedBox(height: 16),
-        SizedBox(
-          width: double.infinity,
-          child: ElevatedButton.icon(
-            onPressed: canCapture ? onCapture : null,
-            icon: capturing
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: Colors.black,
-                    ),
-                  )
-                : const Icon(Icons.camera_alt_rounded),
-            label: Text(capturing ? 'Abriendo camara...' : actionLabel),
-          ),
+        Row(
+          children: [
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: canCapture ? onCapture : null,
+                icon: capturing
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.black,
+                        ),
+                      )
+                    : const Icon(Icons.camera_alt_rounded),
+                label: Text(capturing ? 'Abriendo camara...' : actionLabel),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: canImport ? onPickImages : null,
+                icon: importing
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.photo_library_outlined),
+                label: Text(importing ? 'Importando...' : 'Seleccionar imagenes'),
+              ),
+            ),
+          ],
         ),
       ],
     );

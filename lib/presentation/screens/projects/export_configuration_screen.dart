@@ -5,12 +5,12 @@ import '../../../domain/projects/project_export_config.dart';
 import '../../../domain/projects/project_model.dart';
 import '../../../domain/projects/project_processing.dart';
 import '../../../domain/projects/project_workflow.dart';
-import '../../controllers/project_export_controller.dart';
 import '../../providers/project_providers.dart';
 import '../../widgets/app_page_header.dart';
 import '../../widgets/app_surface_card.dart';
 import '../../widgets/export_configuration_panel.dart';
 import '../../widgets/status_badge.dart';
+import '../processing_progress_screen.dart';
 
 class ExportConfigurationScreen extends ConsumerStatefulWidget {
   const ExportConfigurationScreen({super.key, required this.projectId});
@@ -192,7 +192,9 @@ class _ExportConfigurationScreenState
   Future<void> _processProject(ProjectModel project) async {
     if (project.coverage.acceptedPhotos == 0) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Debes validar capturas antes de procesar.')),
+        const SnackBar(
+          content: Text('Debes validar capturas antes de procesar.'),
+        ),
       );
       return;
     }
@@ -206,19 +208,24 @@ class _ExportConfigurationScreenState
     );
 
     final result = await ref
-        .read(projectExportControllerProvider)
-        .processProject(effectiveProject);
+        .read(projectBackendControllerProvider)
+        .submitForProcessing(effectiveProject);
 
     if (!mounted) return;
     setState(() => _processing = false);
 
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(result.message ?? 'El procesamiento ha finalizado.'),
-      ),
+      SnackBar(content: Text(result.message ?? 'El procesamiento ha finalizado.')),
     );
-  }
 
+    if (result.success) {
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => ProcessingProgressScreen(projectId: project.id),
+        ),
+      );
+    }
+  }
   Future<void> _exportProject(ProjectModel project) async {
     _saveDraft(project);
     setState(() => _exporting = true);

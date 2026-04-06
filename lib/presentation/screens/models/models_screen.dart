@@ -13,6 +13,7 @@ import '../../widgets/app_section_badge.dart';
 import '../../widgets/app_surface_card.dart';
 import '../../widgets/project_overview_card.dart';
 import '../../widgets/status_badge.dart';
+import '../model_viewer_screen.dart';
 import '../project_workspace_screen.dart';
 
 class ModelsScreen extends ConsumerStatefulWidget {
@@ -217,11 +218,9 @@ class _ModelCard extends StatelessWidget {
               Expanded(
                 child: ElevatedButton.icon(
                   onPressed: () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text(
-                          'Punto de integracion listo para visor 3D embebido.',
-                        ),
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => ModelViewerScreen(projectId: project.id),
                       ),
                     );
                   },

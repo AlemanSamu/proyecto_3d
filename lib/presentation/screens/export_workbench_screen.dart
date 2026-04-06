@@ -12,6 +12,8 @@ import '../widgets/app_section_badge.dart';
 import '../widgets/app_surface_card.dart';
 import '../widgets/export_configuration_panel.dart';
 import '../widgets/status_badge.dart';
+import 'model_viewer_screen.dart';
+import 'processing_progress_screen.dart';
 
 class ExportWorkbenchScreen extends ConsumerStatefulWidget {
   const ExportWorkbenchScreen({super.key, required this.projectId});
@@ -167,9 +169,45 @@ class _ExportWorkbenchScreenState extends ConsumerState<ExportWorkbenchScreen> {
               ),
             ],
           ),
+          if (project.status == ProjectStatus.processing ||
+              project.processingState.isActive) ...[
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) =>
+                          ProcessingProgressScreen(projectId: project.id),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.sync_rounded),
+                label: const Text('Ver progreso'),
+              ),
+            ),
+          ],
           if ((project.modelPath ?? '').isNotEmpty) ...[
             const SizedBox(height: 12),
-            AppSurfaceCard(title: 'Modelo local', subtitle: project.modelPath!),
+            AppSurfaceCard(
+              title: 'Modelo local',
+              subtitle: project.modelPath!,
+              child: SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => ModelViewerScreen(projectId: project.id),
+                      ),
+                    );
+                  },
+                  icon: const Icon(Icons.view_in_ar_rounded),
+                  label: const Text('Abrir visor 3D'),
+                ),
+              ),
+            ),
           ],
           if ((project.lastExportPackagePath ?? '').isNotEmpty) ...[
             const SizedBox(height: 12),
@@ -225,17 +263,23 @@ class _ExportWorkbenchScreenState extends ConsumerState<ExportWorkbenchScreen> {
     );
 
     final result = await ref
-        .read(projectExportControllerProvider)
-        .processProject(effectiveProject);
+        .read(projectBackendControllerProvider)
+        .submitForProcessing(effectiveProject);
 
     if (!mounted) return;
     setState(() => _processing = false);
 
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(result.message ?? 'El procesamiento ha finalizado.'),
-      ),
+      SnackBar(content: Text(result.message)),
     );
+
+    if (result.success) {
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => ProcessingProgressScreen(projectId: project.id),
+        ),
+      );
+    }
   }
 
   Future<void> _exportProject(ProjectModel project) async {

@@ -1,10 +1,10 @@
 class LocalServerConfig {
   const LocalServerConfig({
-    this.host = '192.168.1.120',
-    this.port = 8080,
+    this.host = '192.168.1.100',
+    this.port = 8000,
     this.useHttps = false,
     this.autoSync = false,
-    this.enabled = false,
+    this.enabled = true,
     this.apiKey,
   });
 
@@ -53,11 +53,11 @@ class LocalServerConfig {
   factory LocalServerConfig.fromJson(Map<String, dynamic> json) {
     final parsedPort = json['port'];
     return LocalServerConfig(
-      host: json['host'] as String? ?? '192.168.1.120',
-      port: parsedPort is int ? parsedPort : 8080,
+      host: json['host'] as String? ?? '192.168.1.100',
+      port: parsedPort is int ? parsedPort : 8000,
       useHttps: json['useHttps'] as bool? ?? false,
       autoSync: json['autoSync'] as bool? ?? false,
-      enabled: json['enabled'] as bool? ?? false,
+      enabled: json['enabled'] as bool? ?? true,
       apiKey: _readText(json['apiKey']),
     );
   }

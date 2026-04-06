@@ -79,6 +79,10 @@ class ProjectModel {
     ProjectCoverageSummary? coverage,
     this.modelPath,
     this.lastExportPackagePath,
+    this.remoteProjectId,
+    this.remoteModelUrl,
+    this.remoteStatus,
+    this.remoteErrorMessage,
   }) : description = description?.trim() ?? '',
        updatedAt = updatedAt ?? createdAt,
        photos = photos ?? _photosFromImagePaths(imagePaths) ?? const [],
@@ -124,6 +128,10 @@ class ProjectModel {
   final ProjectCoverageSummary coverage;
   final String? modelPath;
   final String? lastExportPackagePath;
+  final String? remoteProjectId;
+  final String? remoteModelUrl;
+  final String? remoteStatus;
+  final String? remoteErrorMessage;
 
   DateTime? get lastCaptureAt {
     if (photos.isEmpty) return null;
@@ -155,6 +163,14 @@ class ProjectModel {
     bool clearModelPath = false,
     String? lastExportPackagePath,
     bool clearLastExportPackagePath = false,
+    String? remoteProjectId,
+    bool clearRemoteProjectId = false,
+    String? remoteModelUrl,
+    bool clearRemoteModelUrl = false,
+    String? remoteStatus,
+    bool clearRemoteStatus = false,
+    String? remoteErrorMessage,
+    bool clearRemoteErrorMessage = false,
     List<String>? imagePaths,
   }) {
     final nextPhotos =
@@ -169,6 +185,18 @@ class ProjectModel {
     final nextPackagePath = clearLastExportPackagePath
         ? null
         : (lastExportPackagePath ?? this.lastExportPackagePath);
+    final nextRemoteProjectId = clearRemoteProjectId
+        ? null
+        : (remoteProjectId ?? this.remoteProjectId);
+    final nextRemoteModelUrl = clearRemoteModelUrl
+        ? null
+        : (remoteModelUrl ?? this.remoteModelUrl);
+    final nextRemoteStatus = clearRemoteStatus
+        ? null
+        : (remoteStatus ?? this.remoteStatus);
+    final nextRemoteErrorMessage = clearRemoteErrorMessage
+        ? null
+        : (remoteErrorMessage ?? this.remoteErrorMessage);
 
     return ProjectModel(
       id: id,
@@ -193,6 +221,10 @@ class ProjectModel {
       coverage: nextCoverage,
       modelPath: nextModelPath,
       lastExportPackagePath: nextPackagePath,
+      remoteProjectId: nextRemoteProjectId,
+      remoteModelUrl: nextRemoteModelUrl,
+      remoteStatus: nextRemoteStatus,
+      remoteErrorMessage: nextRemoteErrorMessage,
     );
   }
 
@@ -216,6 +248,10 @@ class ProjectModel {
       'coverage': coverage.toJson(),
       'modelPath': modelPath,
       'lastExportPackagePath': lastExportPackagePath,
+      'remoteProjectId': remoteProjectId,
+      'remoteModelUrl': remoteModelUrl,
+      'remoteStatus': remoteStatus,
+      'remoteErrorMessage': remoteErrorMessage,
     };
   }
 
@@ -247,6 +283,10 @@ class ProjectModel {
       coverage: parsedCoverage,
       modelPath: parsedModelPath,
       lastExportPackagePath: parsedPackage,
+      remoteProjectId: _readOptionalString(json['remoteProjectId']),
+      remoteModelUrl: _readOptionalString(json['remoteModelUrl']),
+      remoteStatus: _readOptionalString(json['remoteStatus']),
+      remoteErrorMessage: _readOptionalString(json['remoteErrorMessage']),
     );
   }
 
@@ -436,6 +476,12 @@ class ProjectModel {
     if (value == null) return null;
     final trimmed = value.trim();
     return trimmed.isEmpty ? null : trimmed;
+  }
+
+  static String? _readOptionalString(Object? value) {
+    if (value is! String) return null;
+    final normalized = value.trim();
+    return normalized.isEmpty ? null : normalized;
   }
 
   static ProjectStatus _suggestStatus({

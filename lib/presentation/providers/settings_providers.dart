@@ -1,12 +1,17 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../data/services/backend_api_exception.dart';
+import '../../data/services/local_backend_api_service.dart';
 import '../../domain/settings/local_server_config.dart';
 
 enum ServerConnectionHealth { unknown, checking, reachable, unreachable }
 
 class LocalServerSettingsState {
   const LocalServerSettingsState({
-    this.config = const LocalServerConfig(),
+    this.config = const LocalServerConfig(
+      host: '192.168.1.100',
+      port: 8000,
+    ),
     this.health = ServerConnectionHealth.unknown,
     this.lastMessage,
     this.lastCheckedAt,
@@ -42,7 +47,12 @@ class LocalServerSettingsState {
 
 class LocalServerSettingsNotifier
     extends StateNotifier<LocalServerSettingsState> {
-  LocalServerSettingsNotifier() : super(const LocalServerSettingsState());
+  LocalServerSettingsNotifier({
+    required Future<String> Function(LocalServerConfig config) pingBackend,
+  }) : _pingBackend = pingBackend,
+       super(const LocalServerSettingsState());
+
+  final Future<String> Function(LocalServerConfig config) _pingBackend;
 
   void updateConfig(LocalServerConfig config) {
     state = state.copyWith(config: config);
@@ -81,29 +91,55 @@ class LocalServerSettingsNotifier
       clearLastMessage: true,
     );
 
-    await Future<void>.delayed(const Duration(milliseconds: 700));
-
     final config = state.config;
-    final validHost = config.host.trim().isNotEmpty;
-    final validPort = config.port > 0 && config.port < 65536;
-    final reachable = validHost && validPort;
-
-    state = state.copyWith(
-      health: reachable
-          ? ServerConnectionHealth.reachable
-          : ServerConnectionHealth.unreachable,
-      lastMessage: reachable
-          ? 'Conectado a ${config.endpoint}'
-          : 'No se pudo establecer conexion. Revisa host y puerto.',
-      lastCheckedAt: DateTime.now(),
-    );
+    try {
+      final message = await _pingBackend(config);
+      state = state.copyWith(
+        health: ServerConnectionHealth.reachable,
+        lastMessage: message,
+        lastCheckedAt: DateTime.now(),
+      );
+    } on BackendApiException catch (error) {
+      state = state.copyWith(
+        health: ServerConnectionHealth.unreachable,
+        lastMessage: error.message,
+        lastCheckedAt: DateTime.now(),
+      );
+    } catch (_) {
+      state = state.copyWith(
+        health: ServerConnectionHealth.unreachable,
+        lastMessage: 'No se pudo establecer conexion con el backend.',
+        lastCheckedAt: DateTime.now(),
+      );
+    }
   }
 }
+
+final localBackendApiPathsProvider = Provider<LocalBackendApiPaths>((ref) {
+  return const LocalBackendApiPaths();
+});
+
+final localBackendApiServiceProvider = Provider<LocalBackendApiService>((ref) {
+  final service = LocalBackendApiService(
+    config: ref.watch(localServerSettingsProvider).config,
+    paths: ref.watch(localBackendApiPathsProvider),
+  );
+  ref.onDispose(service.dispose);
+  return service;
+});
 
 final localServerSettingsProvider =
     StateNotifierProvider<
       LocalServerSettingsNotifier,
       LocalServerSettingsState
     >((ref) {
-      return LocalServerSettingsNotifier();
+      return LocalServerSettingsNotifier(
+        pingBackend: (config) {
+          final service = LocalBackendApiService(
+            config: config,
+            paths: ref.read(localBackendApiPathsProvider),
+          );
+          return service.ping().whenComplete(service.dispose);
+        },
+      );
     });

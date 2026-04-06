@@ -23,6 +23,7 @@ import 'capture/capture_screen.dart';
 import 'capture_photo_inspector_screen.dart';
 import 'capture_review_workspace_screen.dart';
 import 'export_workbench_screen.dart';
+import 'model_viewer_screen.dart';
 
 class ProjectWorkspaceScreen extends ConsumerWidget {
   const ProjectWorkspaceScreen({super.key, required this.projectId});
@@ -105,11 +106,16 @@ class ProjectWorkspaceScreen extends ConsumerWidget {
           ),
         );
       case ProjectPrimaryActionIntent.process:
-      case ProjectPrimaryActionIntent.models:
       case ProjectPrimaryActionIntent.export:
         return Navigator.of(context).push(
           MaterialPageRoute(
             builder: (_) => ExportWorkbenchScreen(projectId: project.id),
+          ),
+        );
+      case ProjectPrimaryActionIntent.models:
+        return Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => ModelViewerScreen(projectId: project.id),
           ),
         );
     }

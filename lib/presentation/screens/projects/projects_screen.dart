@@ -10,7 +10,7 @@ import '../../widgets/project_form_dialog.dart';
 import '../../widgets/project_overview_card.dart';
 import '../capture/capture_screen.dart';
 import 'capture_review_screen.dart';
-import 'export_configuration_screen.dart';
+import '../export_workbench_screen.dart';
 
 class ProjectsScreen extends ConsumerStatefulWidget {
   const ProjectsScreen({super.key, required this.onOpenProject});
@@ -214,7 +214,7 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
       case _ProjectAction.configure:
         await Navigator.of(context).push(
           MaterialPageRoute(
-            builder: (_) => ExportConfigurationScreen(projectId: project.id),
+            builder: (_) => ExportWorkbenchScreen(projectId: project.id),
           ),
         );
         return;
