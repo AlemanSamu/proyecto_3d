@@ -76,7 +76,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   Expanded(
                     child: TextField(
                       controller: _hostController,
-                      decoration: const InputDecoration(labelText: 'Host'),
+                      decoration: const InputDecoration(labelText: 'Host o URL'),
                     ),
                   ),
                   const SizedBox(width: 10),
@@ -192,6 +192,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       port: int.tryParse(_portController.text.trim()) ?? 8080,
       useHttps: ref.read(localServerSettingsProvider).config.useHttps,
     );
+    final normalizedConfig = ref.read(localServerSettingsProvider).config;
+    _hostController.text = normalizedConfig.host;
+    _portController.text = '${normalizedConfig.port}';
     notifier.updateApiKey(_apiController.text);
     ScaffoldMessenger.of(
       context,

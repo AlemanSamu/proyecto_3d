@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
@@ -34,7 +35,8 @@ class LocalBackendApiPaths {
   String startProcessingFor(String projectId) =>
       _withProjectId(startProcessingTemplate, projectId);
 
-  String statusFor(String projectId) => _withProjectId(statusTemplate, projectId);
+  String statusFor(String projectId) =>
+      _withProjectId(statusTemplate, projectId);
 
   String modelFor(String projectId) => _withProjectId(modelTemplate, projectId);
 
@@ -66,9 +68,14 @@ class LocalBackendApiService {
 
   Future<String> ping() async {
     _ensureServerConfigured();
+    _logDebug('Probando /health en ${_config.endpoint}');
     final response = await _sendGet(paths.health);
     _ensureSuccess(response, expectedStatus: const {200, 204});
-    return 'Conectado a ${_config.endpoint}';
+    _logDebug(
+      'Resultado /health ${response.statusCode} en ${_config.endpoint}: '
+      '${_summarizeBody(response)}',
+    );
+    return 'Conexion OK con ${_config.endpoint}';
   }
 
   Future<String> createProject({
@@ -93,7 +100,10 @@ class LocalBackendApiService {
       expectedStatus: const {200, 201},
     );
 
-    final json = _decodeJsonObject(response.bodyBytes, operation: 'crear proyecto');
+    final json = _decodeJsonObject(
+      response.bodyBytes,
+      operation: 'crear proyecto',
+    );
     final data = _readMap(json, const ['data', 'project']);
     final projectId =
         _readString(data, const ['id', 'projectId', 'project_id']) ??
@@ -157,24 +167,37 @@ class LocalBackendApiService {
       ),
     );
 
+    _logDebug('POST multipart $uri');
     http.StreamedResponse streamed;
     try {
       streamed = await request.send().timeout(timeout);
-    } on TimeoutException {
+    } on TimeoutException catch (error) {
+      _logTransportError(
+        'Tiempo de espera agotado al subir imagen.',
+        uri,
+        error,
+      );
       throw const BackendApiException(
         message: 'Tiempo de espera agotado al subir imagen.',
       );
-    } on SocketException {
+    } on SocketException catch (error) {
+      _logTransportError(
+        'Sin conexion al backend al subir imagen.',
+        uri,
+        error,
+      );
       throw const BackendApiException(
         message: 'Sin conexion al backend al subir imagen.',
       );
-    } on HandshakeException {
+    } on HandshakeException catch (error) {
+      _logTransportError('Error TLS/SSL al subir imagen.', uri, error);
       throw const BackendApiException(
         message: 'Error TLS/SSL al subir imagen.',
       );
     }
 
     final response = await http.Response.fromStream(streamed);
+    _logDebug('Respuesta ${response.statusCode} para POST multipart $uri');
     _ensureSuccess(response, expectedStatus: const {200, 201, 202, 204});
   }
 
@@ -202,12 +225,17 @@ class LocalBackendApiService {
     final response = await _sendGet(paths.statusFor(remoteProjectId));
     _ensureSuccess(response, expectedStatus: const {200});
 
-    final decoded = _decodeJson(response.bodyBytes, operation: 'consultar estado');
+    final decoded = _decodeJson(
+      response.bodyBytes,
+      operation: 'consultar estado',
+    );
     if (decoded is Map<String, dynamic>) {
       return BackendProcessingStatus.fromJson(decoded);
     }
     if (decoded is Map) {
-      return BackendProcessingStatus.fromJson(Map<String, dynamic>.from(decoded));
+      return BackendProcessingStatus.fromJson(
+        Map<String, dynamic>.from(decoded),
+      );
     }
     if (decoded is List && decoded.isNotEmpty && decoded.first is Map) {
       final first = decoded.first;
@@ -252,7 +280,11 @@ class LocalBackendApiService {
       );
       final modelData = _readMap(json, const ['model', 'result', 'data']);
       final downloadUrl =
-          _readString(modelData, const ['url', 'downloadUrl', 'download_url']) ??
+          _readString(modelData, const [
+            'url',
+            'downloadUrl',
+            'download_url',
+          ]) ??
           _readString(json, const ['url', 'downloadUrl', 'download_url']);
       final format =
           _readString(modelData, const ['format', 'extension']) ??
@@ -368,6 +400,7 @@ class LocalBackendApiService {
     final encodedBody = jsonEncode(body);
     http.Response response;
 
+    _logDebug('${method.toUpperCase()} $uri');
     try {
       switch (method.toUpperCase()) {
         case 'POST':
@@ -386,20 +419,34 @@ class LocalBackendApiService {
             details: method,
           );
       }
-    } on TimeoutException {
+    } on TimeoutException catch (error) {
+      _logTransportError(
+        'Tiempo de espera agotado con el backend.',
+        uri,
+        error,
+      );
       throw const BackendApiException(
         message: 'Tiempo de espera agotado con el backend.',
       );
-    } on SocketException {
+    } on SocketException catch (error) {
+      _logTransportError(
+        'No se pudo conectar con el backend local.',
+        uri,
+        error,
+      );
       throw const BackendApiException(
         message: 'No se pudo conectar con el backend local.',
       );
-    } on HandshakeException {
+    } on HandshakeException catch (error) {
+      _logTransportError('Error TLS/SSL con el backend local.', uri, error);
       throw const BackendApiException(
         message: 'Error TLS/SSL con el backend local.',
       );
     }
 
+    _logDebug(
+      'Respuesta ${response.statusCode} para ${method.toUpperCase()} $uri',
+    );
     _ensureSuccess(response, expectedStatus: expectedStatus);
     return response;
   }
@@ -412,19 +459,33 @@ class LocalBackendApiService {
     Uri uri, {
     bool acceptBinary = false,
   }) async {
+    _logDebug('GET $uri');
     try {
-      return await _client
+      final response = await _client
           .get(uri, headers: _headers(acceptBinary: acceptBinary))
           .timeout(timeout);
-    } on TimeoutException {
+      _logDebug('Respuesta ${response.statusCode} para GET $uri');
+      return response;
+    } on TimeoutException catch (error) {
+      _logTransportError(
+        'Tiempo de espera agotado con el backend.',
+        uri,
+        error,
+      );
       throw const BackendApiException(
         message: 'Tiempo de espera agotado con el backend.',
       );
-    } on SocketException {
+    } on SocketException catch (error) {
+      _logTransportError(
+        'No se pudo conectar con el backend local.',
+        uri,
+        error,
+      );
       throw const BackendApiException(
         message: 'No se pudo conectar con el backend local.',
       );
-    } on HandshakeException {
+    } on HandshakeException catch (error) {
+      _logTransportError('Error TLS/SSL con el backend local.', uri, error);
       throw const BackendApiException(
         message: 'Error TLS/SSL con el backend local.',
       );
@@ -438,11 +499,12 @@ class LocalBackendApiService {
             'La integracion con backend local esta deshabilitada en Ajustes.',
       );
     }
-    if (_config.host.trim().isEmpty || _config.port <= 0 || _config.port > 65535) {
+    if (!_config.hasValidEndpoint) {
       throw const BackendApiException(
         message: 'La configuracion del backend local es invalida.',
       );
     }
+    _logDebug('Backend configurado en ${_config.endpoint}');
   }
 
   Uri _buildUri(String pathOrUrl) {
@@ -467,20 +529,55 @@ class LocalBackendApiService {
 
     final apiKey = _config.apiKey?.trim();
     if (apiKey != null && apiKey.isNotEmpty) {
-      headers['x-api-key'] = apiKey;
-      headers['Authorization'] = 'Bearer $apiKey';
+      headers['X-API-Key'] = apiKey;
     }
 
     return headers;
   }
 
-  void _ensureSuccess(http.Response response, {Set<int> expectedStatus = const {200}}) {
+  void _ensureSuccess(
+    http.Response response, {
+    Set<int> expectedStatus = const {200},
+  }) {
     if (expectedStatus.contains(response.statusCode)) return;
+
+    final details = _extractErrorMessage(response);
+    if (response.statusCode == 401) {
+      _logDebug(
+        'Respuesta 401 por API key incorrecta o faltante. detalle=$details',
+      );
+      throw BackendApiException(
+        message: 'API key faltante o incorrecta para el backend local.',
+        statusCode: response.statusCode,
+        details: details,
+      );
+    }
+
+    _logDebug(
+      'Respuesta inesperada ${response.statusCode} del backend. detalle=$details',
+    );
     throw BackendApiException(
       message: 'Respuesta inesperada del backend.',
       statusCode: response.statusCode,
-      details: _extractErrorMessage(response),
+      details: details,
     );
+  }
+
+  void _logDebug(String message) {
+    if (!kDebugMode) return;
+    debugPrint('[LocalBackendApiService] $message');
+  }
+
+  void _logTransportError(String message, Uri uri, Object error) {
+    _logDebug('$message url=$uri error=$error');
+  }
+
+  String _summarizeBody(http.Response response) {
+    if (response.bodyBytes.isEmpty) {
+      return 'sin cuerpo';
+    }
+    final summary = _extractErrorMessage(response);
+    return summary.length <= 180 ? summary : '${summary.substring(0, 180)}...';
   }
 
   Object? _decodeJson(List<int> body, {required String operation}) {
@@ -524,18 +621,22 @@ class LocalBackendApiService {
     try {
       final decoded = jsonDecode(utf8.decode(body));
       if (decoded is Map<String, dynamic>) {
-        final message = _readString(
-          decoded,
-          const ['message', 'error', 'detail', 'description'],
-        );
+        final message = _readString(decoded, const [
+          'message',
+          'error',
+          'detail',
+          'description',
+        ]);
         if (message != null) return message;
       }
       if (decoded is Map) {
         final map = Map<String, dynamic>.from(decoded);
-        final message = _readString(
-          map,
-          const ['message', 'error', 'detail', 'description'],
-        );
+        final message = _readString(map, const [
+          'message',
+          'error',
+          'detail',
+          'description',
+        ]);
         if (message != null) return message;
       }
     } catch (_) {
@@ -593,7 +694,8 @@ class LocalBackendApiService {
 
   static String? _extensionFromContentType(String contentType) {
     if (contentType.contains('model/gltf-binary')) return 'glb';
-    if (contentType.contains('model/obj') || contentType.contains('text/plain')) {
+    if (contentType.contains('model/obj') ||
+        contentType.contains('text/plain')) {
       return 'obj';
     }
     if (contentType.contains('application/octet-stream')) return null;

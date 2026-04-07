@@ -23,8 +23,7 @@ void main() {
 
     final service = LocalBackendApiService(
       config: const LocalServerConfig(
-        host: '127.0.0.1',
-        port: 8000,
+        baseUrl: 'http://127.0.0.1:8000',
         enabled: true,
       ),
       documentsDirectoryProvider: () async => docsDir,

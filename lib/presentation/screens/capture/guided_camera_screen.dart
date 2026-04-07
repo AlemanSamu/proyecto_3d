@@ -38,6 +38,8 @@ enum _SceneQuality { analyzing, good, warning, critical }
 
 enum _DistanceBand { unknown, far, optimal, close }
 
+enum _PendingSessionDecision { keepCapturing, discard, saveAndExit }
+
 class GuidedCameraScreen extends StatefulWidget {
   const GuidedCameraScreen({
     super.key,
@@ -174,7 +176,7 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
       canPop: !_capturing,
       onPopInvokedWithResult: (didPop, _) {
         if (didPop || _capturing) return;
-        Navigator.of(context).pop();
+        unawaited(_handleCloseRequested());
       },
       child: Scaffold(
         backgroundColor: Colors.black,
@@ -246,7 +248,7 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
       targetMinPhotos: widget.targetMinPhotos,
       sessionShotCount: _sessionShots.length,
       progress: _coverageProgress,
-      onClose: _capturing ? null : () => Navigator.of(context).pop(),
+      onClose: _capturing ? null : _handleCloseRequested,
     );
 
     if (_initializing || _errorText != null) {
@@ -359,7 +361,9 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
                   Expanded(
                     child: _ControlButton(
                       icon: Icons.check_rounded,
-                      label: 'Finalizar',
+                      label: _sessionShots.isEmpty
+                          ? 'Finalizar'
+                          : 'Guardar lote',
                       emphasized: _sessionShots.isNotEmpty,
                       onTap: _finishSession,
                     ),
@@ -667,7 +671,7 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
       });
       _showTemporaryGuidance(
         const _GuidanceMessage(
-          text: 'Buena captura',
+          text: 'Captura confirmada. Usa Guardar lote para dejarla en el proyecto.',
           color: Color(0xFF57D684),
           icon: Icons.check_circle_outline_rounded,
         ),
@@ -707,72 +711,89 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
 
     final result = await showModalBottomSheet<bool>(
       context: context,
+      isDismissible: false,
+      enableDrag: false,
+      isScrollControlled: true,
+      useSafeArea: true,
       builder: (ctx) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 6, 16, 16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'Revision inmediata',
-                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 18),
-              ),
-              const SizedBox(height: 4),
-              const Text(
-                'Confirma si esta toma entra al lote actual.',
-                style: TextStyle(color: Colors.white70, fontSize: 12),
-              ),
-              const SizedBox(height: 10),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(16),
-                child: AspectRatio(
-                  aspectRatio: 1.35,
-                  child: Image.file(File(path), fit: BoxFit.cover),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(ctx).size.height * 0.92,
+          ),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(16, 6, 16, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Revision inmediata',
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 18),
                 ),
-              ),
-              const SizedBox(height: 12),
-              _GuidanceBanner(message: guidance, compact: true),
-              const SizedBox(height: 10),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  _HudPill(
-                    label: 'Brillo',
-                    value: _brightness == null
-                        ? '--'
-                        : _brightness!.toStringAsFixed(0),
+                const SizedBox(height: 4),
+                const Text(
+                  'Confirma si esta toma entra al lote actual.',
+                  style: TextStyle(color: Colors.white70, fontSize: 12),
+                ),
+                const SizedBox(height: 10),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(16),
+                  child: AspectRatio(
+                    aspectRatio: 1.1,
+                    child: Image.file(File(path), fit: BoxFit.cover),
                   ),
-                  _HudPill(
-                    label: 'Detalle',
-                    value: _detail == null ? '--' : _detail!.toStringAsFixed(0),
-                  ),
-                  _HudPill(
-                    label: 'Estabilidad',
-                    value: '${(_stability * 100).round()}%',
+                ),
+                const SizedBox(height: 12),
+                _GuidanceBanner(message: guidance, compact: true),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    _HudPill(
+                      label: 'Brillo',
+                      value: _brightness == null
+                          ? '--'
+                          : _brightness!.toStringAsFixed(0),
+                    ),
+                    _HudPill(
+                      label: 'Detalle',
+                      value:
+                          _detail == null ? '--' : _detail!.toStringAsFixed(0),
+                    ),
+                    _HudPill(
+                      label: 'Estabilidad',
+                      value: '${(_stability * 100).round()}%',
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.of(ctx).pop(false),
+                        child: const Text('Repetir'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: () => Navigator.of(ctx).pop(true),
+                        child: const Text('Confirmar captura'),
+                      ),
+                    ),
+                  ],
+                ),
+                if (_sessionShots.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  Text(
+                    '${_sessionShots.length} capturas siguen en el lote. Usa "Guardar lote" para dejarlas en el proyecto.',
+                    style: const TextStyle(color: Colors.white70, fontSize: 12),
                   ),
                 ],
-              ),
-              const SizedBox(height: 14),
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton(
-                      onPressed: () => Navigator.of(ctx).pop(false),
-                      child: const Text('Descartar'),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: ElevatedButton(
-                      onPressed: () => Navigator.of(ctx).pop(true),
-                      child: const Text('Guardar toma'),
-                    ),
-                  ),
-                ],
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -881,6 +902,64 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
     await _stopImageStreamIfNeeded();
     if (!mounted) return;
     Navigator.of(context).pop(GuidedCameraSessionResult(shots: _sessionShots));
+  }
+
+  Future<void> _handleCloseRequested() async {
+    if (_capturing || !mounted) return;
+    if (_sessionShots.isEmpty) {
+      Navigator.of(context).pop();
+      return;
+    }
+
+    final decision = await showDialog<_PendingSessionDecision>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Hay capturas pendientes'),
+        content: Text(
+          'Tienes ${_sessionShots.length} capturas confirmadas en el lote actual. '
+          'Si sales sin guardarlas, se descartaran.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.of(dialogContext).pop(
+                _PendingSessionDecision.keepCapturing,
+              );
+            },
+            child: const Text('Seguir'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.of(
+                dialogContext,
+              ).pop(_PendingSessionDecision.discard);
+            },
+            child: const Text('Descartar'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.of(
+                dialogContext,
+              ).pop(_PendingSessionDecision.saveAndExit);
+            },
+            child: const Text('Guardar lote'),
+          ),
+        ],
+      ),
+    );
+
+    if (!mounted) return;
+    switch (decision) {
+      case _PendingSessionDecision.saveAndExit:
+        await _finishSession();
+        return;
+      case _PendingSessionDecision.discard:
+        Navigator.of(context).pop();
+        return;
+      case _PendingSessionDecision.keepCapturing:
+      case null:
+        return;
+    }
   }
 
   void _showTemporaryGuidance(_GuidanceMessage message) {

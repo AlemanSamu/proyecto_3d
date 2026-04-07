@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../domain/settings/local_server_config.dart';
 import '../providers/settings_providers.dart';
 import '../widgets/app_metric_card.dart';
 import '../widgets/app_page_header.dart';
@@ -16,15 +17,14 @@ class SystemSettingsScreen extends ConsumerStatefulWidget {
 }
 
 class _SystemSettingsScreenState extends ConsumerState<SystemSettingsScreen> {
-  final _hostController = TextEditingController();
-  final _portController = TextEditingController();
+  final _baseUrlController = TextEditingController();
   final _apiController = TextEditingController();
   bool _initialized = false;
+  bool _showApiKey = false;
 
   @override
   void dispose() {
-    _hostController.dispose();
-    _portController.dispose();
+    _baseUrlController.dispose();
     _apiController.dispose();
     super.dispose();
   }
@@ -35,20 +35,18 @@ class _SystemSettingsScreenState extends ConsumerState<SystemSettingsScreen> {
     final notifier = ref.read(localServerSettingsProvider.notifier);
 
     if (!_initialized) {
-      final config = serverState.config;
-      _hostController.text = config.host;
-      _portController.text = '${config.port}';
-      _apiController.text = config.apiKey ?? '';
+      _syncControllers(serverState.config);
       _initialized = true;
     }
 
     final statusText = switch (serverState.health) {
       ServerConnectionHealth.reachable =>
-        serverState.lastMessage ?? 'Conectado',
+        serverState.lastMessage ?? 'Conexion validada correctamente.',
       ServerConnectionHealth.unreachable =>
-        serverState.lastMessage ?? 'Sin conexion',
-      ServerConnectionHealth.checking => 'Validando conectividad local',
-      ServerConnectionHealth.unknown => 'Aun no se ha validado la conexion',
+        serverState.lastMessage ?? 'No se pudo conectar al backend.',
+      ServerConnectionHealth.checking =>
+        'Consultando /health del backend local...',
+      ServerConnectionHealth.unknown => 'Aun no se ha probado la conexion.',
     };
     final statusColor = switch (serverState.health) {
       ServerConnectionHealth.reachable => const Color(0xFF57D684),
@@ -63,9 +61,9 @@ class _SystemSettingsScreenState extends ConsumerState<SystemSettingsScreen> {
         const AppPageHeader(
           title: 'Ajustes',
           subtitle:
-              'Configuracion local limpia y lista para la futura integracion con servidor.',
+              'Configura el backend local con una URL estable, una API key y una validacion rapida de conectividad.',
           badge: AppSectionBadge(
-            label: 'Infraestructura local',
+            label: 'Backend local',
             color: Color(0xFF76A7FF),
             icon: Icons.settings_ethernet_outlined,
           ),
@@ -73,7 +71,7 @@ class _SystemSettingsScreenState extends ConsumerState<SystemSettingsScreen> {
         const SizedBox(height: 18),
         AppSurfaceCard(
           title: 'Estado local',
-          subtitle: 'Lectura rapida del servidor y del modo de sincronizacion.',
+          subtitle: 'Resumen de la configuracion activa para la app Flutter.',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -94,130 +92,114 @@ class _SystemSettingsScreenState extends ConsumerState<SystemSettingsScreen> {
                   SizedBox(
                     width: 148,
                     child: AppMetricCard(
-                      label: 'Canal',
-                      value: serverState.config.useHttps ? 'HTTPS' : 'HTTP',
+                      label: 'Origen',
+                      value: serverState.isUsingDefaultBaseUrl
+                          ? 'Default'
+                          : 'Personalizado',
                       accent: const Color(0xFF7A8CFF),
                     ),
                   ),
                   SizedBox(
                     width: 148,
                     child: AppMetricCard(
-                      label: 'Sync',
-                      value: serverState.config.autoSync ? 'Auto' : 'Manual',
+                      label: 'API key',
+                      value: (serverState.config.apiKey ?? '').isEmpty
+                          ? 'Vacia'
+                          : 'Configurada',
                       accent: const Color(0xFF76A7FF),
                     ),
                   ),
                 ],
               ),
               const SizedBox(height: 14),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: statusColor.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(18),
-                  border: Border.all(
-                    color: statusColor.withValues(alpha: 0.34),
-                  ),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    AppSectionBadge(
-                      label: switch (serverState.health) {
-                        ServerConnectionHealth.reachable =>
-                          'Servidor operativo',
-                        ServerConnectionHealth.unreachable => 'Sin conexion',
-                        ServerConnectionHealth.checking => 'Validando',
-                        ServerConnectionHealth.unknown => 'Pendiente',
-                      },
-                      color: statusColor,
-                      compact: true,
-                    ),
-                    const SizedBox(height: 10),
-                    Text(
-                      serverState.config.endpoint,
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      statusText,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: statusColor,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ],
-                ),
+              _StatusPanel(
+                statusColor: statusColor,
+                statusText: statusText,
+                currentUrl: serverState.config.endpoint,
+                defaultUrl: serverState.defaultConfig.endpoint,
+                health: serverState.health,
               ),
             ],
           ),
         ),
         const SizedBox(height: 12),
         AppSurfaceCard(
-          title: 'Servidor local',
+          title: 'Conexion al backend',
           subtitle:
-              'Mantiene la configuracion lista para paquetes, procesos y sincronizacion local.',
+              'Admite IP, hostname o URLs privadas mas estables para el servidor local.',
           child: Column(
             children: [
               _SettingsToggleRow(
                 title: 'Habilitar servidor local',
-                subtitle: 'Activa la futura integracion con backend local.',
+                subtitle: 'Activa la integracion con el backend FastAPI.',
                 value: serverState.config.enabled,
                 onChanged: notifier.setEnabled,
               ),
               const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _hostController,
-                      decoration: const InputDecoration(labelText: 'Host'),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  SizedBox(
-                    width: 110,
-                    child: TextField(
-                      controller: _portController,
-                      keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(labelText: 'Puerto'),
-                    ),
-                  ),
-                ],
+              _SettingsToggleRow(
+                title: 'Auto-sync',
+                subtitle: 'Conserva la opcion para futuros flujos automaticos.',
+                value: serverState.config.autoSync,
+                onChanged: notifier.setAutoSync,
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _baseUrlController,
+                keyboardType: TextInputType.url,
+                decoration: const InputDecoration(
+                  labelText: 'URL base del backend',
+                  hintText: 'http://nombre-pc:8000',
+                  helperText:
+                      'Ejemplos: http://10.221.168.227:8000 o http://nombre-pc:8000',
+                ),
               ),
               const SizedBox(height: 10),
               TextField(
                 controller: _apiController,
-                decoration: const InputDecoration(
+                obscureText: !_showApiKey,
+                decoration: InputDecoration(
                   labelText: 'API key',
                   hintText: 'token_local_123',
+                  suffixIcon: IconButton(
+                    onPressed: () => setState(() => _showApiKey = !_showApiKey),
+                    icon: Icon(
+                      _showApiKey
+                          ? Icons.visibility_off_outlined
+                          : Icons.visibility_outlined,
+                    ),
+                  ),
                 ),
               ),
               const SizedBox(height: 12),
-              _SettingsToggleRow(
-                title: 'Usar HTTPS',
-                subtitle: 'Cambia el protocolo del endpoint local.',
-                value: serverState.config.useHttps,
-                onChanged: (value) => notifier.updateEndpoint(
-                  host: _hostController.text.trim(),
-                  port: int.tryParse(_portController.text.trim()) ?? 8080,
-                  useHttps: value,
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.05),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.white12),
                 ),
-              ),
-              const SizedBox(height: 10),
-              _SettingsToggleRow(
-                title: 'Auto-sync',
-                subtitle: 'Prepara la app para sincronizacion automatica.',
-                value: serverState.config.autoSync,
-                onChanged: notifier.setAutoSync,
+                child: Text(
+                  'Valor por defecto actual: ${serverState.defaultConfig.endpoint}',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Colors.white70,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
               ),
               const SizedBox(height: 14),
               Row(
                 children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: serverState.isChecking
+                          ? null
+                          : () => _restoreDefaultBaseUrl(notifier),
+                      icon: const Icon(Icons.restart_alt_rounded),
+                      label: const Text('Restaurar default'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
                   Expanded(
                     child: OutlinedButton.icon(
                       onPressed: serverState.isChecking
@@ -227,33 +209,39 @@ class _SystemSettingsScreenState extends ConsumerState<SystemSettingsScreen> {
                       label: const Text('Guardar'),
                     ),
                   ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      onPressed: serverState.isChecking
-                          ? null
-                          : () async {
-                              _saveServerConfig(notifier);
-                              await notifier.testConnection();
-                            },
-                      icon: serverState.isChecking
-                          ? const SizedBox(
-                              width: 14,
-                              height: 14,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: Colors.black,
-                              ),
-                            )
-                          : const Icon(Icons.network_check_rounded),
-                      label: Text(
-                        serverState.isChecking
-                            ? 'Probando...'
-                            : 'Probar conexion',
-                      ),
-                    ),
-                  ),
                 ],
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: serverState.isChecking
+                      ? null
+                      : () async {
+                          if (!_saveServerConfig(
+                            notifier,
+                            showFeedback: false,
+                          )) {
+                            return;
+                          }
+                          await notifier.testConnection();
+                        },
+                  icon: serverState.isChecking
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.black,
+                          ),
+                        )
+                      : const Icon(Icons.network_check_rounded),
+                  label: Text(
+                    serverState.isChecking
+                        ? 'Probando conexion...'
+                        : 'Probar conexion',
+                  ),
+                ),
               ),
             ],
           ),
@@ -262,16 +250,114 @@ class _SystemSettingsScreenState extends ConsumerState<SystemSettingsScreen> {
     );
   }
 
-  void _saveServerConfig(LocalServerSettingsNotifier notifier) {
-    notifier.updateEndpoint(
-      host: _hostController.text.trim(),
-      port: int.tryParse(_portController.text.trim()) ?? 8080,
-      useHttps: ref.read(localServerSettingsProvider).config.useHttps,
+  void _syncControllers(LocalServerConfig config) {
+    _baseUrlController.text = config.endpoint;
+    _apiController.text = config.apiKey ?? '';
+  }
+
+  void _restoreDefaultBaseUrl(LocalServerSettingsNotifier notifier) {
+    notifier.restoreDefaultBaseUrl();
+    final restored = ref.read(localServerSettingsProvider).config;
+    _baseUrlController.text = restored.endpoint;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('URL restaurada al valor por defecto.')),
     );
+  }
+
+  bool _saveServerConfig(
+    LocalServerSettingsNotifier notifier, {
+    bool showFeedback = true,
+  }) {
+    final normalizedBaseUrl = LocalServerConfig.normalizeBaseUrl(
+      _baseUrlController.text,
+    );
+    if (normalizedBaseUrl.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Ingresa una URL base valida para el backend.'),
+        ),
+      );
+      return false;
+    }
+
+    notifier.updateBaseUrl(normalizedBaseUrl);
     notifier.updateApiKey(_apiController.text);
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('Configuracion guardada.')));
+    final normalizedConfig = ref.read(localServerSettingsProvider).config;
+    _syncControllers(normalizedConfig);
+
+    if (showFeedback) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Configuracion guardada.')));
+    }
+    return true;
+  }
+}
+
+class _StatusPanel extends StatelessWidget {
+  const _StatusPanel({
+    required this.statusColor,
+    required this.statusText,
+    required this.currentUrl,
+    required this.defaultUrl,
+    required this.health,
+  });
+
+  final Color statusColor;
+  final String statusText;
+  final String currentUrl;
+  final String defaultUrl;
+  final ServerConnectionHealth health;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: statusColor.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: statusColor.withValues(alpha: 0.34)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          AppSectionBadge(
+            label: switch (health) {
+              ServerConnectionHealth.reachable => 'Servidor operativo',
+              ServerConnectionHealth.unreachable => 'Sin conexion',
+              ServerConnectionHealth.checking => 'Validando',
+              ServerConnectionHealth.unknown => 'Pendiente',
+            },
+            color: statusColor,
+            compact: true,
+          ),
+          const SizedBox(height: 10),
+          Text(
+            currentUrl.isEmpty ? 'URL no configurada' : currentUrl,
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+              color: Colors.white,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            statusText,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: statusColor,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            'Default: $defaultUrl',
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: Colors.white70),
+          ),
+        ],
+      ),
+    );
   }
 }
 
