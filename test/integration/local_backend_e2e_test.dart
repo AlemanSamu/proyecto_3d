@@ -10,6 +10,11 @@ import 'package:proyecto_3d/domain/projects/project_export_config.dart';
 import 'package:proyecto_3d/domain/projects/project_processing.dart';
 import 'package:proyecto_3d/domain/settings/local_server_config.dart';
 
+const bool kRunLocalBackendE2E = bool.fromEnvironment(
+  'RUN_LOCAL_BACKEND_E2E',
+  defaultValue: false,
+);
+
 void main() {
   test('flujo remoto end-to-end con PROCESAMIENTO', () async {
     debugPrint('[E2E] iniciando test');
@@ -58,7 +63,9 @@ void main() {
       final file = File(
         '${imageDir.path}${Platform.pathSeparator}capture_$index.jpg',
       );
-      await file.writeAsBytes(List<int>.generate(128, (i) => (i + index) % 256));
+      await file.writeAsBytes(
+        List<int>.generate(128, (i) => (i + index) % 256),
+      );
       imagePaths.add(file.path);
     }
     debugPrint('[E2E] imagenes creadas: ${imagePaths.length}');
@@ -73,18 +80,21 @@ void main() {
     final statusAfterUploadResponse = await http.get(
       Uri.parse('http://127.0.0.1:8000/projects/$remoteProjectId/status'),
     );
-    debugPrint('[E2E] status tras upload: ${statusAfterUploadResponse.statusCode}');
+    debugPrint(
+      '[E2E] status tras upload: ${statusAfterUploadResponse.statusCode}',
+    );
     expect(statusAfterUploadResponse.statusCode, 200);
-    final statusAfterUploadJson = jsonDecode(
-      statusAfterUploadResponse.body,
-    ) as Map<String, dynamic>;
+    final statusAfterUploadJson =
+        jsonDecode(statusAfterUploadResponse.body) as Map<String, dynamic>;
     expect(statusAfterUploadJson['status'], 'ready');
     expect(statusAfterUploadJson['image_count'], 3);
 
     final statusBeforeProcessing = await service.fetchStatus(
       remoteProjectId: remoteProjectId,
     );
-    debugPrint('[E2E] status antes de procesar: ${statusBeforeProcessing.rawStatus}');
+    debugPrint(
+      '[E2E] status antes de procesar: ${statusBeforeProcessing.rawStatus}',
+    );
     expect(statusBeforeProcessing.rawStatus.toLowerCase(), 'ready');
     expect(statusBeforeProcessing.isCompleted, isFalse);
     expect(statusBeforeProcessing.isActive, isTrue);
@@ -124,7 +134,7 @@ void main() {
     final modelBytes = await modelFile.readAsBytes();
     expect(modelBytes.length, greaterThan(0));
     expect(String.fromCharCodes(modelBytes.take(4)), 'glTF');
-  });
+  }, skip: !kRunLocalBackendE2E);
 }
 
 Future<BackendProcessingStatus> _waitForTerminalStatus(
