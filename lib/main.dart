@@ -35,7 +35,7 @@ class App extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Captura Guiada 3D',
+      title: 'Captura 3D',
       theme: AppTheme.dark,
       home: const AppShell(),
     );
