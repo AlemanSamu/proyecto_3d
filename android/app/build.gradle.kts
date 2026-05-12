@@ -41,9 +41,10 @@ val isReleaseTaskRequested =
     }
 
 if (isReleaseTaskRequested && !hasReleaseSigning) {
-    throw GradleException(
-        "Release signing is not configured. Add android/key.properties " +
-            "or set env vars: storeFile, storePassword, keyAlias, keyPassword.",
+    logger.warn(
+        "Release signing is not configured. Building with debug signing. " +
+            "For production, add android/key.properties or set env vars: " +
+            "storeFile, storePassword, keyAlias, keyPassword.",
     )
 }
 
@@ -86,9 +87,12 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            if (hasReleaseSigning) {
-                signingConfig = signingConfigs.getByName("release")
-            }
+            signingConfig =
+                if (hasReleaseSigning) {
+                    signingConfigs.getByName("release")
+                } else {
+                    signingConfigs.getByName("debug")
+                }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
