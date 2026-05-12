@@ -120,11 +120,27 @@ void main() {
       final created = notifier.createProject(name: 'Proyecto demo');
       notifier.addImagePath(created.id, '/app/captures/mid_0.jpg');
       notifier.removeImagePath(created.id, '/app/captures/mid_0.jpg');
-      await Future<void>.delayed(const Duration(milliseconds: 160));
+      await _waitUntil(() {
+        return repo.writeCalls == 3 &&
+            repo.projects.length == 1 &&
+            repo.projects.first.imagePaths.isEmpty;
+      });
 
       expect(repo.writeCalls, 3);
       expect(repo.projects, hasLength(1));
       expect(repo.projects.first.imagePaths, isEmpty);
     },
   );
+}
+
+Future<void> _waitUntil(
+  bool Function() condition, {
+  Duration timeout = const Duration(seconds: 2),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (DateTime.now().isBefore(deadline)) {
+    if (condition()) return;
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
+  fail('No se cumplio la condicion esperada dentro de $timeout.');
 }

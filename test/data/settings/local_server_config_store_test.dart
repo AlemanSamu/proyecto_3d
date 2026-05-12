@@ -26,6 +26,21 @@ void main() {
     expect(config.apiKey, 'secreta');
   });
 
+  test('load keeps default API key when no key has been persisted', () async {
+    final preferences = await SharedPreferences.getInstance();
+    final store = LocalServerConfigStore(preferences: preferences);
+
+    final config = store.load(
+      defaults: const LocalServerConfig(
+        baseUrl: 'http://127.0.0.1:8000',
+        apiKey: 'default-secret',
+      ),
+    );
+
+    expect(config.endpoint, 'http://127.0.0.1:8000');
+    expect(config.apiKey, 'default-secret');
+  });
+
   test('save persists normalized URL and removes empty API key', () async {
     final preferences = await SharedPreferences.getInstance();
     final store = LocalServerConfigStore(preferences: preferences);

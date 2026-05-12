@@ -23,13 +23,14 @@ class LocalServerConfigStore {
       return defaults;
     }
 
+    final hasStoredApiKey = preferences.containsKey(_apiKeyKey);
     final storedApiKey = _readText(preferences.getString(_apiKeyKey));
     final config = defaults.copyWith(
       baseUrl: preferences.getString(_baseUrlKey) ?? defaults.baseUrl,
       enabled: preferences.getBool(_enabledKey) ?? defaults.enabled,
       autoSync: preferences.getBool(_autoSyncKey) ?? defaults.autoSync,
-      apiKey: storedApiKey,
-      clearApiKey: storedApiKey == null,
+      apiKey: hasStoredApiKey ? storedApiKey : defaults.apiKey,
+      clearApiKey: hasStoredApiKey && storedApiKey == null,
     );
     _log('Loaded persisted config', config);
     return config;

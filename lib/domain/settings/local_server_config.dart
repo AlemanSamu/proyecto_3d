@@ -11,10 +11,27 @@ class NormalizedLocalServerEndpoint {
 }
 
 class LocalServerDefaults {
-  static const String baseUrl = String.fromEnvironment(
+  static const String bundledApiKey = 'local3d_2026_Defensa_ClaveFuerte_7391';
+  static const String configuredBaseUrl = String.fromEnvironment(
     'LOCAL_BACKEND_URL',
-    defaultValue: 'http://127.0.0.1:8000',
+    defaultValue: '',
   );
+  static const String configuredApiKey = String.fromEnvironment(
+    'LOCAL_BACKEND_API_KEY',
+    defaultValue: bundledApiKey,
+  );
+  static const String baseUrl = 'http://127.0.0.1:8000';
+
+  static String get effectiveBaseUrl {
+    final configured = LocalServerConfig.normalizeBaseUrl(configuredBaseUrl);
+    return configured.isEmpty ? baseUrl : configured;
+  }
+
+  static String? get effectiveApiKey {
+    final normalized = configuredApiKey.trim();
+    if (normalized.isEmpty) return null;
+    return normalized;
+  }
 }
 
 class LocalServerConfig {
@@ -34,6 +51,12 @@ class LocalServerConfig {
 
   String get endpoint => endpointUri?.toString() ?? '';
 
+  String get basePath {
+    final uri = endpointUri;
+    if (uri == null) return '';
+    return _normalizedBasePath(uri);
+  }
+
   String get host => endpointUri?.host ?? '';
 
   int get port {
@@ -46,6 +69,15 @@ class LocalServerConfig {
   bool get useHttps => endpointUri?.scheme.toLowerCase() == 'https';
 
   bool get hasValidEndpoint => endpointUri != null;
+
+  static bool isLoopbackHost(String host) {
+    final normalized = host.trim().toLowerCase();
+    if (normalized.isEmpty) return false;
+    return normalized == 'localhost' ||
+        normalized == '127.0.0.1' ||
+        normalized == '::1' ||
+        normalized == '[::1]';
+  }
 
   static String normalizeBaseUrl(
     String rawBaseUrl, {
@@ -68,7 +100,13 @@ class LocalServerConfig {
 
     final scheme = parsed.scheme.toLowerCase() == 'https' ? 'https' : 'http';
     final port = parsed.hasPort ? parsed.port : fallbackPort;
-    return Uri(scheme: scheme, host: parsed.host.trim(), port: port).toString();
+    final path = _normalizedBasePath(parsed);
+    return Uri(
+      scheme: scheme,
+      host: parsed.host.trim(),
+      port: port,
+      path: path,
+    ).toString();
   }
 
   static Uri? tryParseBaseUrl(String rawBaseUrl) {
@@ -152,6 +190,20 @@ class LocalServerConfig {
     if (value is int) return value;
     if (value is String) return int.tryParse(value.trim());
     return null;
+  }
+
+  static String _normalizedBasePath(Uri uri) {
+    final segments = uri.pathSegments
+        .map((segment) => segment.trim())
+        .where((segment) => segment.isNotEmpty)
+        .toList(growable: true);
+
+    if (segments.isNotEmpty && segments.last.toLowerCase() == 'health') {
+      segments.removeLast();
+    }
+
+    if (segments.isEmpty) return '';
+    return '/${segments.join('/')}';
   }
 
   static String? _readText(Object? value) {

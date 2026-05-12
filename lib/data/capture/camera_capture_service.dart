@@ -10,9 +10,13 @@ abstract class CameraCaptureService {
 /// controller. It can also be reused by guided flows through
 /// [createBackCameraController] + [takePictureWithController].
 class DeviceCameraCaptureService implements CameraCaptureService {
-  DeviceCameraCaptureService({this.resolutionPreset = ResolutionPreset.high});
+  DeviceCameraCaptureService({
+    this.resolutionPreset = ResolutionPreset.max,
+    this.imageFormatGroup = ImageFormatGroup.jpeg,
+  });
 
   final ResolutionPreset resolutionPreset;
+  final ImageFormatGroup imageFormatGroup;
 
   Future<CameraController?> createBackCameraController() async {
     final cameras = await availableCameras();
@@ -27,8 +31,16 @@ class DeviceCameraCaptureService implements CameraCaptureService {
       selected,
       resolutionPreset,
       enableAudio: false,
+      imageFormatGroup: imageFormatGroup,
     );
     await controller.initialize();
+    try {
+      await controller.setFlashMode(FlashMode.off);
+      await controller.setFocusMode(FocusMode.auto);
+      await controller.setExposureMode(ExposureMode.auto);
+    } catch (_) {
+      // Best effort: some devices restrict these controls.
+    }
     return controller;
   }
 
@@ -55,6 +67,6 @@ class DeviceCameraCaptureService implements CameraCaptureService {
 /// Legacy name kept for compatibility with previous code.
 class ImagePickerCameraCaptureService extends DeviceCameraCaptureService {
   ImagePickerCameraCaptureService({
-    super.resolutionPreset = ResolutionPreset.high,
+    super.resolutionPreset = ResolutionPreset.max,
   });
 }

@@ -27,6 +27,7 @@ import '../capture_review_workspace_screen.dart';
 import '../export_workbench_screen.dart';
 import '../project_workspace_screen.dart';
 import 'capture_guide_plan.dart';
+import 'capture_profile.dart';
 import 'guided_camera_screen.dart';
 
 class CaptureScreen extends ConsumerStatefulWidget {
@@ -39,8 +40,8 @@ class CaptureScreen extends ConsumerStatefulWidget {
 }
 
 class _CaptureScreenState extends ConsumerState<CaptureScreen> {
-  static const _targetMinPhotos = 24;
-  static const _targetMaxPhotos = 48;
+  static const _targetMinPhotos = 30;
+  static const _targetMaxPhotos = 60;
 
   final _permissionService = CameraPermissionService();
   late final CaptureFlowController _captureController;
@@ -50,6 +51,7 @@ class _CaptureScreenState extends ConsumerState<CaptureScreen> {
   bool _capturing = false;
   bool _importing = false;
   bool _requireLiveQuality = true;
+  CaptureProfile _captureProfile = CaptureProfile.estable;
 
   @override
   void initState() {
@@ -101,6 +103,9 @@ class _CaptureScreenState extends ConsumerState<CaptureScreen> {
           onProjectChanged: (value) => setState(() => _activeProjectId = value),
           onQualityModeChanged: (value) =>
               setState(() => _requireLiveQuality = value),
+          captureProfile: _captureProfile,
+          onCaptureProfileChanged: (value) =>
+              setState(() => _captureProfile = value),
         ),
         const SizedBox(height: 12),
         _CameraLaunchCard(
@@ -109,6 +114,7 @@ class _CaptureScreenState extends ConsumerState<CaptureScreen> {
           targetMinPhotos: _targetMinPhotos,
           targetMaxPhotos: _targetMaxPhotos,
           requireLiveQuality: _requireLiveQuality,
+          captureProfile: _captureProfile,
           capturing: _capturing,
           importing: _importing,
           onCapture: () => _capture(activeProject),
@@ -207,6 +213,8 @@ class _CaptureScreenState extends ConsumerState<CaptureScreen> {
                 levelLabel: nextStep.level.label,
                 angleDeg: nextStep.angleDeg,
                 requireLiveQualityGate: _requireLiveQuality,
+                captureProfile: _captureProfile,
+                existingLevelCounts: _buildLevelCounts(project),
               ),
             ),
           );
@@ -214,6 +222,8 @@ class _CaptureScreenState extends ConsumerState<CaptureScreen> {
       if (!mounted || session == null || session.shots.isEmpty) return;
 
       int savedCount = 0;
+      final durations = <int>[];
+      int stableCaptures = 0;
       for (final shot in session.shots) {
         final result = await _captureController.processCapturedFile(
           projectId: project.id,
@@ -227,8 +237,31 @@ class _CaptureScreenState extends ConsumerState<CaptureScreen> {
           sharpness: shot.detail,
           accepted: shot.qualityOk,
           flaggedForRetake: !shot.qualityOk,
+          captureProfile: shot.profile.key,
+          captureIndex: savedCount + 1 + project.photos.length,
+          stable: shot.stable,
+          localWarnings: shot.warnings,
+          captureStartTime: shot.captureStartTime,
+          captureEndTime: shot.captureEndTime,
+          captureDurationMs: shot.captureDurationMs,
+          cameraResolutionPreset: shot.cameraResolutionPreset,
+          qualityGateEnabled: shot.qualityGateEnabled,
+          realtimeAnalysisEnabled: shot.realtimeAnalysisEnabled,
         );
-        if (result.saved) savedCount++;
+        if (result.saved) {
+          savedCount++;
+          durations.add(shot.captureDurationMs);
+          if (shot.stable) stableCaptures++;
+        }
+      }
+
+      if (durations.isNotEmpty) {
+        await _captureController.writeSessionSummary(
+          projectId: project.id,
+          profileUsed: _captureProfile.key,
+          captureDurationsMs: durations,
+          stableCaptures: stableCaptures,
+        );
       }
 
       if (!mounted) return;
@@ -326,6 +359,16 @@ class _CaptureScreenState extends ConsumerState<CaptureScreen> {
     }
   }
 
+  Map<String, int> _buildLevelCounts(ProjectModel project) {
+    final counts = <String, int>{'low': 0, 'mid': 0, 'top': 0};
+    for (final photo in project.photos) {
+      final level = photo.level;
+      if (level == null || !counts.containsKey(level)) continue;
+      counts[level] = (counts[level] ?? 0) + 1;
+    }
+    return counts;
+  }
+
   void _showSnack(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(
@@ -341,6 +384,8 @@ class _SessionSetupCard extends StatelessWidget {
     required this.requireLiveQuality,
     required this.onProjectChanged,
     required this.onQualityModeChanged,
+    required this.captureProfile,
+    required this.onCaptureProfileChanged,
   });
 
   final List<ProjectModel> projects;
@@ -348,6 +393,8 @@ class _SessionSetupCard extends StatelessWidget {
   final bool requireLiveQuality;
   final ValueChanged<String> onProjectChanged;
   final ValueChanged<bool> onQualityModeChanged;
+  final CaptureProfile captureProfile;
+  final ValueChanged<CaptureProfile> onCaptureProfileChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -411,6 +458,73 @@ class _SessionSetupCard extends StatelessWidget {
             ],
           ],
           const SizedBox(height: 14),
+          DropdownButtonFormField<CaptureProfile>(
+            initialValue: captureProfile,
+            isExpanded: true,
+            decoration: const InputDecoration(labelText: 'Perfil de captura'),
+            selectedItemBuilder: (context) {
+              return CaptureProfile.values
+                  .map(
+                    (profile) => Text(
+                      profile.label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  )
+                  .toList();
+            },
+            items: [
+              for (final profile in CaptureProfile.values)
+                DropdownMenuItem(
+                  value: profile,
+                  child: Text(
+                    '${profile.label} - ${profile.shortHint}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+            ],
+            onChanged: (value) {
+              if (value == null) return;
+              onCaptureProfileChanged(value);
+            },
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              AppInfoChip(
+                label: 'Min ${captureProfile.recommendedMinPhotos}',
+                color: const Color(0xFFFFB347),
+                icon: Icons.low_priority_rounded,
+              ),
+              AppInfoChip(
+                label: 'Ideal ${captureProfile.recommendedIdealPhotos}',
+                color: const Color(0xFF57D684),
+                icon: Icons.high_quality_rounded,
+              ),
+              AppInfoChip(
+                label: 'Resolucion maxima',
+                color: const Color(0xFF76A7FF),
+                icon: Icons.photo_size_select_large_rounded,
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final warning in captureProfile.warnings)
+                AppInfoChip(
+                  label: warning,
+                  color: const Color(0xFFC3CAD9),
+                  icon: Icons.warning_amber_rounded,
+                ),
+            ],
+          ),
+          const SizedBox(height: 14),
           Container(
             width: double.infinity,
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
@@ -465,6 +579,7 @@ class _CameraLaunchCard extends StatelessWidget {
     required this.targetMinPhotos,
     required this.targetMaxPhotos,
     required this.requireLiveQuality,
+    required this.captureProfile,
     required this.capturing,
     required this.importing,
     required this.onCapture,
@@ -476,6 +591,7 @@ class _CameraLaunchCard extends StatelessWidget {
   final int targetMinPhotos;
   final int targetMaxPhotos;
   final bool requireLiveQuality;
+  final CaptureProfile captureProfile;
   final bool capturing;
   final bool importing;
   final VoidCallback onCapture;
@@ -592,6 +708,11 @@ class _CameraLaunchCard extends StatelessWidget {
               color: requireLiveQuality
                   ? const Color(0xFF4FD3C1)
                   : const Color(0xFFFFB347),
+            ),
+            AppInfoChip(
+              icon: Icons.tune_rounded,
+              label: 'Perfil ${captureProfile.label}',
+              color: const Color(0xFF76A7FF),
             ),
           ],
         ),

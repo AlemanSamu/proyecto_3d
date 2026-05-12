@@ -8,6 +8,7 @@ class BackendProcessingStatus {
     required this.state,
     required this.progress,
     required this.message,
+    this.backendStage,
     this.modelUrl,
     this.modelFormat,
     required this.updatedAt,
@@ -17,6 +18,7 @@ class BackendProcessingStatus {
   final BackendJobState state;
   final double progress;
   final String message;
+  final String? backendStage;
   final String? modelUrl;
   final String? modelFormat;
   final DateTime updatedAt;
@@ -36,47 +38,50 @@ class BackendProcessingStatus {
       return ProcessingStage.queued;
     }
 
-    final status = rawStatus.toLowerCase();
-    if (status.contains('prepare')) return ProcessingStage.preparing;
-    if (status.contains('texture')) return ProcessingStage.texturing;
-    if (status.contains('packag')) return ProcessingStage.packaging;
-    if (status.contains('recon') ||
-        status.contains('mesh') ||
-        status.contains('geometry')) {
-      return ProcessingStage.reconstructing;
-    }
-
-    return isActive ? ProcessingStage.reconstructing : ProcessingStage.idle;
+    return _stageFromHint(backendStage ?? rawStatus, isActive: isActive);
   }
 
   factory BackendProcessingStatus.fromJson(Map<String, dynamic> json) {
-    final statusText = _readString(json, const [
+    final backendStage = _readString(json, const [
+      'current_stage',
+      'currentStage',
+      'stage',
+    ]);
+    final statusText =
+        _readString(json, const [
           'status',
           'state',
-          'stage',
           'jobStatus',
           'job_status',
         ]) ??
+        backendStage ??
         'unknown';
     final status = statusText.toLowerCase();
 
     final modelMap = _readMap(json, const ['model', 'result', 'output']);
     final modelUrl =
-        _readString(
-          json,
-          const ['modelUrl', 'model_url', 'model_download_url', 'downloadUrl'],
-        ) ??
+        _readString(json, const [
+          'modelUrl',
+          'model_url',
+          'model_download_url',
+          'downloadUrl',
+        ]) ??
         _readString(modelMap, const ['url', 'downloadUrl', 'download_url']);
     final modelFormat =
-        _readString(
-          json,
-          const ['modelFormat', 'model_format', 'output_format', 'format'],
-        ) ??
+        _readString(json, const [
+          'modelFormat',
+          'model_format',
+          'output_format',
+          'format',
+        ]) ??
         _readString(modelMap, const ['format', 'extension']);
 
     final progress = _readProgress(json);
-    final message = _readString(json, const [
+    final message =
+        _readString(json, const [
           'message',
+          'status_message',
+          'statusMessage',
           'detail',
           'description',
           'error',
@@ -94,10 +99,49 @@ class BackendProcessingStatus {
           : normalizedState,
       progress: progress,
       message: message,
+      backendStage: backendStage,
       modelUrl: modelUrl,
       modelFormat: modelFormat,
       updatedAt: DateTime.now(),
     );
+  }
+
+  static ProcessingStage _stageFromHint(
+    String rawHint, {
+    required bool isActive,
+  }) {
+    final hint = rawHint.toLowerCase();
+    if (hint.contains('queue') ||
+        hint.contains('pending') ||
+        hint.contains('ready') ||
+        hint == 'created') {
+      return ProcessingStage.queued;
+    }
+
+    if (hint.contains('prepare') ||
+        hint.contains('start') ||
+        hint.contains('feature') ||
+        hint.contains('matcher') ||
+        hint.contains('undistorter')) {
+      return ProcessingStage.preparing;
+    }
+
+    if (hint.contains('texture')) return ProcessingStage.texturing;
+    if (hint.contains('packag') || hint.contains('export')) {
+      return ProcessingStage.packaging;
+    }
+
+    if (hint.contains('recon') ||
+        hint.contains('mapper') ||
+        hint.contains('mesh') ||
+        hint.contains('geometry') ||
+        hint.contains('stereo') ||
+        hint.contains('fusion') ||
+        hint.contains('sparse')) {
+      return ProcessingStage.reconstructing;
+    }
+
+    return isActive ? ProcessingStage.reconstructing : ProcessingStage.idle;
   }
 
   static BackendJobState _stateFromRawStatus(String raw) {
@@ -114,7 +158,10 @@ class BackendProcessingStatus {
       return BackendJobState.completed;
     }
 
-    if (raw.contains('queue') || raw.contains('pending') || raw.contains('ready') || raw == 'created') {
+    if (raw.contains('queue') ||
+        raw.contains('pending') ||
+        raw.contains('ready') ||
+        raw == 'created') {
       return BackendJobState.queued;
     }
 

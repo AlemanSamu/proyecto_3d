@@ -45,13 +45,27 @@ class LocalBackendApiPaths {
   }
 }
 
+class BackendConnectionProbeResult {
+  const BackendConnectionProbeResult({
+    required this.message,
+    this.resolvedConfig,
+  });
+
+  final String message;
+  final LocalServerConfig? resolvedConfig;
+}
+
 class LocalBackendApiService {
+  static const int _defaultNetworkRetries = 2;
+  static const int _uploadNetworkRetries = 3;
+  static const Duration _retryDelayBase = Duration(milliseconds: 700);
+
   LocalBackendApiService({
     required LocalServerConfig config,
     http.Client? client,
     Future<Directory> Function()? documentsDirectoryProvider,
     this.paths = const LocalBackendApiPaths(),
-    this.timeout = const Duration(seconds: 25),
+    this.timeout = const Duration(seconds: 45),
   }) : _config = config,
        _client = client ?? http.Client(),
        _documentsDirectoryProvider = documentsDirectoryProvider;
@@ -67,15 +81,82 @@ class LocalBackendApiService {
   }
 
   Future<String> ping() async {
+    final result = await probeConnection();
+    return result.message;
+  }
+
+  Future<BackendConnectionProbeResult> probeConnection() async {
     _ensureServerConfigured();
-    _logDebug('Probando /health en ${_config.endpoint}');
-    final response = await _sendGet(paths.health);
-    _ensureSuccess(response, expectedStatus: const {200, 204});
-    _logDebug(
-      'Resultado /health ${response.statusCode} en ${_config.endpoint}: '
-      '${_summarizeBody(response)}',
-    );
-    return 'Conexion OK con ${_config.endpoint}';
+    final candidates = _buildHealthCheckCandidates();
+    if (candidates.isEmpty) {
+      throw const BackendApiException(
+        message: 'La configuracion del backend local es invalida.',
+      );
+    }
+
+    BackendApiException? lastNetworkError;
+    for (var index = 0; index < candidates.length; index++) {
+      final candidateBaseUrl = candidates[index];
+      final uri = _buildUriFromBase(candidateBaseUrl, paths.health);
+      _logDebug(
+        'Probando /health en $uri '
+        '(intento ${index + 1}/${candidates.length})',
+      );
+
+      try {
+        final response = await _sendGetAbsolute(uri, networkRetries: 0);
+        _ensureSuccess(response, expectedStatus: const {200, 204});
+
+        final healthPayload = _tryDecodeJsonObject(response.bodyBytes);
+        final preferredBaseUrl = _resolvePreferredBaseUrl(
+          currentBaseUrl: candidateBaseUrl,
+          healthPayload: healthPayload,
+        );
+        final resolvedBaseUrl = preferredBaseUrl ?? candidateBaseUrl;
+        final normalizedResolved = LocalServerConfig.normalizeBaseUrl(
+          resolvedBaseUrl,
+        );
+        final shouldUpdateConfig =
+            normalizedResolved.isNotEmpty &&
+            normalizedResolved != _config.endpoint;
+
+        _logDebug(
+          'Resultado /health ${response.statusCode} en $candidateBaseUrl: '
+          '${_summarizeBody(response)}',
+        );
+
+        if (shouldUpdateConfig) {
+          _logDebug(
+            'Backend recomendado por /health: $normalizedResolved '
+            '(actual=${_config.endpoint})',
+          );
+          return BackendConnectionProbeResult(
+            message: 'Conexion OK. URL recomendada: $normalizedResolved',
+            resolvedConfig: _config.copyWith(baseUrl: normalizedResolved),
+          );
+        }
+
+        return BackendConnectionProbeResult(
+          message: 'Conexion OK con $candidateBaseUrl',
+        );
+      } on BackendApiException catch (error) {
+        final isLastCandidate = index == candidates.length - 1;
+        if (error.isNetwork && !isLastCandidate) {
+          lastNetworkError = error;
+          _logDebug(
+            'No se alcanzo $candidateBaseUrl. '
+            'Se prueba siguiente candidato. error=$error',
+          );
+          continue;
+        }
+        rethrow;
+      }
+    }
+
+    throw lastNetworkError ??
+        const BackendApiException(
+          message: 'No se pudo establecer conexion con el backend.',
+        );
   }
 
   Future<String> createProject({
@@ -152,19 +233,31 @@ class LocalBackendApiService {
       );
     }
 
+    await _withNetworkRetry<void>(
+      action: 'upload image',
+      maxRetries: _uploadNetworkRetries,
+      operation: () => _sendSingleImageUpload(
+        remoteProjectId: remoteProjectId,
+        imagePath: imagePath,
+        filename: file.uri.pathSegments.isEmpty
+            ? 'capture.jpg'
+            : file.uri.pathSegments.last,
+      ),
+    );
+  }
+
+  Future<void> _sendSingleImageUpload({
+    required String remoteProjectId,
+    required String imagePath,
+    required String filename,
+  }) async {
     final uri = _buildUri(paths.uploadImageFor(remoteProjectId));
     final request = http.MultipartRequest('POST', uri);
     request.headers.addAll(_headers(includeJson: false));
     request.fields['projectId'] = remoteProjectId;
     request.fields['project_id'] = remoteProjectId;
     request.files.add(
-      await http.MultipartFile.fromPath(
-        'files',
-        imagePath,
-        filename: file.uri.pathSegments.isEmpty
-            ? 'capture.jpg'
-            : file.uri.pathSegments.last,
-      ),
+      await http.MultipartFile.fromPath('files', imagePath, filename: filename),
     );
 
     _logDebug('POST multipart $uri');
@@ -395,101 +488,123 @@ class LocalBackendApiService {
     required String path,
     required Map<String, dynamic> body,
     Set<int> expectedStatus = const {200},
+    int networkRetries = 0,
   }) async {
     final uri = _buildUri(path);
     final encodedBody = jsonEncode(body);
-    http.Response response;
 
-    _logDebug('${method.toUpperCase()} $uri');
-    try {
-      switch (method.toUpperCase()) {
-        case 'POST':
-          response = await _client
-              .post(uri, headers: _headers(), body: encodedBody)
-              .timeout(timeout);
-          break;
-        case 'PUT':
-          response = await _client
-              .put(uri, headers: _headers(), body: encodedBody)
-              .timeout(timeout);
-          break;
-        default:
-          throw BackendApiException(
-            message: 'Metodo HTTP no soportado para JSON.',
-            details: method,
+    return _withNetworkRetry<http.Response>(
+      action: '${method.toUpperCase()} $uri',
+      maxRetries: networkRetries,
+      operation: () async {
+        http.Response response;
+        _logDebug('${method.toUpperCase()} $uri');
+        try {
+          switch (method.toUpperCase()) {
+            case 'POST':
+              response = await _client
+                  .post(uri, headers: _headers(), body: encodedBody)
+                  .timeout(timeout);
+              break;
+            case 'PUT':
+              response = await _client
+                  .put(uri, headers: _headers(), body: encodedBody)
+                  .timeout(timeout);
+              break;
+            default:
+              throw BackendApiException(
+                message: 'Metodo HTTP no soportado para JSON.',
+                details: method,
+              );
+          }
+        } on TimeoutException catch (error) {
+          _logTransportError(
+            'Tiempo de espera agotado con el backend.',
+            uri,
+            error,
           );
-      }
-    } on TimeoutException catch (error) {
-      _logTransportError(
-        'Tiempo de espera agotado con el backend.',
-        uri,
-        error,
-      );
-      throw const BackendApiException(
-        message: 'Tiempo de espera agotado con el backend.',
-      );
-    } on SocketException catch (error) {
-      _logTransportError(
-        'No se pudo conectar con el backend local.',
-        uri,
-        error,
-      );
-      throw const BackendApiException(
-        message: 'No se pudo conectar con el backend local.',
-      );
-    } on HandshakeException catch (error) {
-      _logTransportError('Error TLS/SSL con el backend local.', uri, error);
-      throw const BackendApiException(
-        message: 'Error TLS/SSL con el backend local.',
-      );
-    }
+          throw const BackendApiException(
+            message: 'Tiempo de espera agotado con el backend.',
+          );
+        } on SocketException catch (error) {
+          _logTransportError(
+            'No se pudo conectar con el backend local.',
+            uri,
+            error,
+          );
+          throw const BackendApiException(
+            message: 'No se pudo conectar con el backend local.',
+          );
+        } on HandshakeException catch (error) {
+          _logTransportError('Error TLS/SSL con el backend local.', uri, error);
+          throw const BackendApiException(
+            message: 'Error TLS/SSL con el backend local.',
+          );
+        }
 
-    _logDebug(
-      'Respuesta ${response.statusCode} para ${method.toUpperCase()} $uri',
+        _logDebug(
+          'Respuesta ${response.statusCode} para ${method.toUpperCase()} $uri',
+        );
+        _ensureSuccess(response, expectedStatus: expectedStatus);
+        return response;
+      },
     );
-    _ensureSuccess(response, expectedStatus: expectedStatus);
-    return response;
   }
 
-  Future<http.Response> _sendGet(String path, {bool acceptBinary = false}) {
-    return _sendGetAbsolute(_buildUri(path), acceptBinary: acceptBinary);
+  Future<http.Response> _sendGet(
+    String path, {
+    bool acceptBinary = false,
+    int networkRetries = _defaultNetworkRetries,
+  }) {
+    return _sendGetAbsolute(
+      _buildUri(path),
+      acceptBinary: acceptBinary,
+      networkRetries: networkRetries,
+    );
   }
 
   Future<http.Response> _sendGetAbsolute(
     Uri uri, {
     bool acceptBinary = false,
+    int networkRetries = _defaultNetworkRetries,
   }) async {
-    _logDebug('GET $uri');
-    try {
-      final response = await _client
-          .get(uri, headers: _headers(acceptBinary: acceptBinary))
-          .timeout(timeout);
-      _logDebug('Respuesta ${response.statusCode} para GET $uri');
-      return response;
-    } on TimeoutException catch (error) {
-      _logTransportError(
-        'Tiempo de espera agotado con el backend.',
-        uri,
-        error,
-      );
-      throw const BackendApiException(
-        message: 'Tiempo de espera agotado con el backend.',
-      );
-    } on SocketException catch (error) {
-      _logTransportError(
-        'No se pudo conectar con el backend local.',
-        uri,
-        error,
-      );
-      throw const BackendApiException(
-        message: 'No se pudo conectar con el backend local.',
-      );
-    } on HandshakeException catch (error) {
-      _logTransportError('Error TLS/SSL con el backend local.', uri, error);
-      throw const BackendApiException(
-        message: 'Error TLS/SSL con el backend local.',
-      );
-    }
+    return _withNetworkRetry<http.Response>(
+      action: 'GET $uri',
+      maxRetries: networkRetries,
+      operation: () async {
+        _logDebug('GET $uri');
+        try {
+          final response = await _client
+              .get(uri, headers: _headers(acceptBinary: acceptBinary))
+              .timeout(timeout);
+          _logDebug('Respuesta ${response.statusCode} para GET $uri');
+          return response;
+        } on TimeoutException catch (error) {
+          _logTransportError(
+            'Tiempo de espera agotado con el backend.',
+            uri,
+            error,
+          );
+          throw const BackendApiException(
+            message: 'Tiempo de espera agotado con el backend.',
+          );
+        } on SocketException catch (error) {
+          _logTransportError(
+            'No se pudo conectar con el backend local.',
+            uri,
+            error,
+          );
+          throw const BackendApiException(
+            message: 'No se pudo conectar con el backend local.',
+          );
+        } on HandshakeException catch (error) {
+          _logTransportError('Error TLS/SSL con el backend local.', uri, error);
+          throw const BackendApiException(
+            message: 'Error TLS/SSL con el backend local.',
+          );
+        }
+      },
+    );
   }
 
   void _ensureServerConfigured() {
@@ -508,14 +623,269 @@ class LocalBackendApiService {
   }
 
   Uri _buildUri(String pathOrUrl) {
+    return _buildUriFromBase(_config.endpoint, pathOrUrl);
+  }
+
+  Uri _buildUriFromBase(String baseUrl, String pathOrUrl) {
     final normalized = pathOrUrl.trim();
     if (normalized.startsWith('http://') || normalized.startsWith('https://')) {
       return Uri.parse(normalized);
     }
 
-    final base = Uri.parse(_config.endpoint);
-    if (normalized.startsWith('/')) return base.resolve(normalized);
-    return base.resolve('/$normalized');
+    final base = Uri.parse(baseUrl);
+    final requestUri = Uri.parse(
+      normalized.startsWith('/') ? normalized : '/$normalized',
+    );
+    final resolvedPath = _resolvePathWithBase(
+      basePath: base.path,
+      requestPath: requestUri.path,
+    );
+
+    return base.replace(
+      path: resolvedPath,
+      query: requestUri.query.isEmpty ? null : requestUri.query,
+      fragment: requestUri.fragment.isEmpty ? null : requestUri.fragment,
+    );
+  }
+
+  List<String> _buildHealthCheckCandidates() {
+    final endpoint = _config.endpointUri;
+    if (endpoint == null) {
+      return const [];
+    }
+
+    final candidates = <String>[];
+
+    void addCandidate(String rawCandidate) {
+      final normalized = LocalServerConfig.normalizeBaseUrl(rawCandidate);
+      if (normalized.isEmpty || candidates.contains(normalized)) {
+        return;
+      }
+      candidates.add(normalized);
+    }
+
+    addCandidate(_config.endpoint);
+
+    final normalizedBasePath = _normalizePath(
+      endpoint.path,
+      allowRootEmpty: true,
+    );
+    if (normalizedBasePath.isNotEmpty) {
+      addCandidate(
+        endpoint.replace(path: '', query: null, fragment: null).toString(),
+      );
+    } else {
+      addCandidate(
+        endpoint
+            .replace(path: '/api/v1', query: null, fragment: null)
+            .toString(),
+      );
+    }
+
+    final resolvedPort = endpoint.hasPort
+        ? endpoint.port
+        : (endpoint.scheme.toLowerCase() == 'https' ? 443 : 80);
+    if (LocalServerConfig.isLoopbackHost(endpoint.host)) {
+      final basePath = _normalizePath(endpoint.path, allowRootEmpty: true);
+      addCandidate(
+        Uri(
+          scheme: endpoint.scheme,
+          host: '10.0.2.2',
+          port: resolvedPort,
+          path: basePath,
+        ).toString(),
+      );
+      addCandidate(
+        Uri(
+          scheme: endpoint.scheme,
+          host: 'localhost',
+          port: resolvedPort,
+          path: basePath,
+        ).toString(),
+      );
+      addCandidate(
+        Uri(
+          scheme: endpoint.scheme,
+          host: '127.0.0.1',
+          port: resolvedPort,
+          path: basePath,
+        ).toString(),
+      );
+    }
+
+    return candidates;
+  }
+
+  String? _resolvePreferredBaseUrl({
+    required String currentBaseUrl,
+    required Map<String, dynamic>? healthPayload,
+  }) {
+    if (healthPayload == null) return null;
+
+    final network = _readMap(healthPayload, const ['network']);
+    if (network == null) return null;
+
+    final preferred = _readString(network, const ['preferred_base_url']);
+    final advertised = _readStringList(network, const ['advertised_urls']);
+
+    final candidates = <String>[...advertised];
+    if (preferred != null) {
+      candidates.insert(0, preferred);
+    }
+
+    if (candidates.isEmpty) {
+      return null;
+    }
+
+    final currentUri = Uri.tryParse(currentBaseUrl);
+    if (currentUri == null) {
+      return null;
+    }
+    final currentBasePath = _normalizePath(
+      currentUri.path,
+      allowRootEmpty: true,
+    );
+
+    for (final rawCandidate in candidates) {
+      final normalizedCandidate = LocalServerConfig.normalizeBaseUrl(
+        rawCandidate,
+      );
+      if (normalizedCandidate.isEmpty) {
+        continue;
+      }
+
+      final candidateUri = Uri.parse(normalizedCandidate);
+      final candidateWithBasePath = _appendBasePathIfNeeded(
+        candidateUri: candidateUri,
+        expectedBasePath: currentBasePath,
+      );
+      final resolved = LocalServerConfig.normalizeBaseUrl(
+        candidateWithBasePath.toString(),
+      );
+      if (resolved.isEmpty) {
+        continue;
+      }
+
+      if (_shouldPreferCandidateBaseUrl(currentBaseUrl, resolved)) {
+        return resolved;
+      }
+    }
+
+    return null;
+  }
+
+  Uri _appendBasePathIfNeeded({
+    required Uri candidateUri,
+    required String expectedBasePath,
+  }) {
+    final normalizedExpected = _normalizePath(
+      expectedBasePath,
+      allowRootEmpty: true,
+    );
+    if (normalizedExpected.isEmpty) {
+      return candidateUri;
+    }
+
+    final normalizedCandidatePath = _normalizePath(
+      candidateUri.path,
+      allowRootEmpty: true,
+    );
+    if (normalizedCandidatePath.isEmpty) {
+      return candidateUri.replace(path: normalizedExpected);
+    }
+    if (normalizedCandidatePath == normalizedExpected ||
+        normalizedCandidatePath.startsWith('$normalizedExpected/')) {
+      return candidateUri;
+    }
+
+    return candidateUri.replace(
+      path: '$normalizedExpected$normalizedCandidatePath',
+    );
+  }
+
+  bool _shouldPreferCandidateBaseUrl(
+    String currentBaseUrl,
+    String candidateBaseUrl,
+  ) {
+    if (candidateBaseUrl == currentBaseUrl ||
+        candidateBaseUrl == _config.endpoint) {
+      return false;
+    }
+
+    final currentUri = Uri.tryParse(currentBaseUrl);
+    final candidateUri = Uri.tryParse(candidateBaseUrl);
+    if (currentUri == null || candidateUri == null) {
+      return false;
+    }
+
+    final currentIsLoopback =
+        LocalServerConfig.isLoopbackHost(currentUri.host) ||
+        currentUri.host == '10.0.2.2';
+    final candidateIsLoopback =
+        LocalServerConfig.isLoopbackHost(candidateUri.host) ||
+        candidateUri.host == '10.0.2.2';
+    final currentIsIp = _isIpAddressHost(currentUri.host);
+    final candidateIsIp = _isIpAddressHost(candidateUri.host);
+
+    if (currentIsLoopback && !candidateIsLoopback) {
+      return true;
+    }
+    if (!currentIsLoopback && candidateIsLoopback) {
+      return false;
+    }
+
+    if (!currentIsLoopback && !candidateIsLoopback) {
+      if (currentUri.host == candidateUri.host) {
+        return _normalizePath(currentUri.path, allowRootEmpty: true) !=
+            _normalizePath(candidateUri.path, allowRootEmpty: true);
+      }
+      if (!currentIsIp && candidateIsIp) {
+        // Preferir IP cuando venimos de hostname evita fallos DNS en redes LAN.
+        return true;
+      }
+      if (currentIsIp && !candidateIsIp) {
+        // No reemplazar IP valida por hostname del SO (puede no resolver en Android).
+        return false;
+      }
+      return false;
+    }
+
+    return true;
+  }
+
+  bool _isIpAddressHost(String host) {
+    return InternetAddress.tryParse(host) != null;
+  }
+
+  static String _resolvePathWithBase({
+    required String basePath,
+    required String requestPath,
+  }) {
+    final normalizedBase = _normalizePath(basePath, allowRootEmpty: true);
+    final normalizedRequest = _normalizePath(requestPath);
+
+    if (normalizedBase.isEmpty) return normalizedRequest;
+    if (normalizedRequest == '/') return normalizedBase;
+    if (normalizedRequest == normalizedBase ||
+        normalizedRequest.startsWith('$normalizedBase/')) {
+      return normalizedRequest;
+    }
+    return '$normalizedBase$normalizedRequest';
+  }
+
+  static String _normalizePath(String rawPath, {bool allowRootEmpty = false}) {
+    var normalized = rawPath.trim();
+    if (normalized.isEmpty) return allowRootEmpty ? '' : '/';
+
+    normalized = normalized.replaceAll(RegExp(r'/+'), '/');
+    if (!normalized.startsWith('/')) {
+      normalized = '/$normalized';
+    }
+    if (normalized.length > 1 && normalized.endsWith('/')) {
+      normalized = normalized.substring(0, normalized.length - 1);
+    }
+    if (allowRootEmpty && normalized == '/') return '';
+    return normalized;
   }
 
   Map<String, String> _headers({
@@ -563,6 +933,41 @@ class LocalBackendApiService {
     );
   }
 
+  Future<T> _withNetworkRetry<T>({
+    required String action,
+    required Future<T> Function() operation,
+    int maxRetries = _defaultNetworkRetries,
+  }) async {
+    BackendApiException? lastNetworkError;
+    for (var attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        return await operation();
+      } on BackendApiException catch (error) {
+        if (!error.isNetwork || attempt >= maxRetries) {
+          rethrow;
+        }
+
+        lastNetworkError = error;
+        final delay = _buildRetryDelay(attempt + 1);
+        _logDebug(
+          '$action fallo por red. '
+          'Reintento ${attempt + 1}/$maxRetries en ${delay.inMilliseconds}ms.',
+        );
+        await Future<void>.delayed(delay);
+      }
+    }
+
+    throw lastNetworkError ??
+        const BackendApiException(
+          message: 'No se pudo conectar con el backend local.',
+        );
+  }
+
+  Duration _buildRetryDelay(int attemptNumber) {
+    final multiplier = attemptNumber <= 0 ? 1 : attemptNumber;
+    return Duration(milliseconds: _retryDelayBase.inMilliseconds * multiplier);
+  }
+
   void _logDebug(String message) {
     if (!kDebugMode) return;
     debugPrint('[LocalBackendApiService] $message');
@@ -606,6 +1011,26 @@ class LocalBackendApiService {
     throw BackendApiException(
       message: 'El backend devolvio un payload invalido al $operation.',
     );
+  }
+
+  Map<String, dynamic>? _tryDecodeJsonObject(List<int> body) {
+    if (body.isEmpty) {
+      return null;
+    }
+
+    try {
+      final decoded = jsonDecode(utf8.decode(body));
+      if (decoded is Map<String, dynamic>) {
+        return decoded;
+      }
+      if (decoded is Map) {
+        return Map<String, dynamic>.from(decoded);
+      }
+    } catch (_) {
+      return null;
+    }
+
+    return null;
   }
 
   bool _looksLikeJson(String contentType) {
@@ -671,6 +1096,24 @@ class LocalBackendApiService {
       }
     }
     return null;
+  }
+
+  static List<String> _readStringList(
+    Map<String, dynamic>? source,
+    List<String> keys,
+  ) {
+    if (source == null) return const [];
+    for (final key in keys) {
+      final value = source[key];
+      if (value is List) {
+        return value
+            .whereType<String>()
+            .map((item) => item.trim())
+            .where((item) => item.isNotEmpty)
+            .toList(growable: false);
+      }
+    }
+    return const [];
   }
 
   static String? _normalizedExtension(String? raw) {

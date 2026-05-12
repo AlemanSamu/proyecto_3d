@@ -54,7 +54,7 @@ abstract class CaptureCamera {
 }
 
 class DeviceCaptureCamera implements CaptureCamera {
-  DeviceCaptureCamera({this.resolutionPreset = ResolutionPreset.high});
+  DeviceCaptureCamera({this.resolutionPreset = ResolutionPreset.max});
 
   final ResolutionPreset resolutionPreset;
 
@@ -73,8 +73,16 @@ class DeviceCaptureCamera implements CaptureCamera {
         selected,
         resolutionPreset,
         enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.jpeg,
       );
       await controller.initialize();
+      try {
+        await controller.setFlashMode(FlashMode.off);
+        await controller.setFocusMode(FocusMode.auto);
+        await controller.setExposureMode(ExposureMode.auto);
+      } catch (_) {
+        // Best effort per device.
+      }
       final shot = await controller.takePicture();
       return shot.path;
     } catch (_) {
@@ -87,7 +95,7 @@ class DeviceCaptureCamera implements CaptureCamera {
 
 /// Legacy name kept to avoid breaking old imports/usages.
 class ImagePickerCaptureCamera extends DeviceCaptureCamera {
-  ImagePickerCaptureCamera({super.resolutionPreset = ResolutionPreset.high});
+  ImagePickerCaptureCamera({super.resolutionPreset = ResolutionPreset.max});
 }
 
 abstract class CaptureQualityAnalyzer {
@@ -112,8 +120,6 @@ abstract class CaptureFileStorage {
 }
 
 class LocalCaptureFileStorage implements CaptureFileStorage {
-  static const int _maxWidth = 2000;
-  static const int _jpgQuality = 85;
   static const int _thumbSize = 256;
 
   @override
@@ -138,10 +144,11 @@ class LocalCaptureFileStorage implements CaptureFileStorage {
       }
 
       final stamp = DateTime.now().millisecondsSinceEpoch;
+      final extension = _normalizedExtension(sourcePath);
       final targetPath =
-          '${projectDir.path}${Platform.pathSeparator}${poseId}_$stamp.jpg';
+          '${projectDir.path}${Platform.pathSeparator}${poseId}_$stamp$extension';
 
-      final optimizedPath = await _writeOptimizedImage(
+      final optimizedPath = await _copyOriginalImage(
         sourcePath: sourcePath,
         targetPath: targetPath,
       );
@@ -179,27 +186,32 @@ class LocalCaptureFileStorage implements CaptureFileStorage {
     return '${base}_thumb.jpg';
   }
 
-  Future<String?> _writeOptimizedImage({
+  Future<String?> _copyOriginalImage({
     required String sourcePath,
     required String targetPath,
   }) async {
     try {
-      final sourceBytes = await File(sourcePath).readAsBytes();
-      final decoded = img.decodeImage(sourceBytes);
-      if (decoded == null) {
-        final copied = await File(sourcePath).copy(targetPath);
-        return copied.path;
-      }
-
-      final resized = decoded.width > _maxWidth
-          ? img.copyResize(decoded, width: _maxWidth)
-          : decoded;
-
-      final encoded = img.encodeJpg(resized, quality: _jpgQuality);
-      await File(targetPath).writeAsBytes(encoded, flush: true);
-      return targetPath;
+      final copied = await File(sourcePath).copy(targetPath);
+      return copied.path;
     } catch (_) {
       return null;
+    }
+  }
+
+  String _normalizedExtension(String path) {
+    final dot = path.lastIndexOf('.');
+    if (dot < 0 || dot >= path.length - 1) return '.jpg';
+    final raw = path.substring(dot).toLowerCase();
+    switch (raw) {
+      case '.jpg':
+      case '.jpeg':
+      case '.png':
+      case '.webp':
+      case '.heic':
+      case '.heif':
+        return raw;
+      default:
+        return '.jpg';
     }
   }
 

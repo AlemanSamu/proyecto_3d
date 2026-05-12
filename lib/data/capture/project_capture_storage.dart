@@ -14,8 +14,6 @@ abstract class ProjectCaptureStorage {
 }
 
 class LocalProjectCaptureStorage implements ProjectCaptureStorage {
-  static const int _maxWidth = 2000;
-  static const int _jpgQuality = 85;
   static const int _thumbSize = 256;
 
   @override
@@ -36,10 +34,11 @@ class LocalProjectCaptureStorage implements ProjectCaptureStorage {
       }
 
       final stamp = DateTime.now().millisecondsSinceEpoch;
+      final extension = _normalizedExtension(sourcePath);
       final targetPath =
-          '${projectDir.path}${Platform.pathSeparator}img_$stamp.jpg';
+          '${projectDir.path}${Platform.pathSeparator}img_$stamp$extension';
 
-      final savedPath = await _writeOptimizedJpeg(
+      final savedPath = await _copyOriginalImage(
         sourcePath: sourcePath,
         targetPath: targetPath,
       );
@@ -83,27 +82,32 @@ class LocalProjectCaptureStorage implements ProjectCaptureStorage {
     return '${base}_thumb.jpg';
   }
 
-  Future<String?> _writeOptimizedJpeg({
+  Future<String?> _copyOriginalImage({
     required String sourcePath,
     required String targetPath,
   }) async {
     try {
-      final bytes = await File(sourcePath).readAsBytes();
-      final decoded = img.decodeImage(bytes);
-      if (decoded == null) {
-        final copied = await File(sourcePath).copy(targetPath);
-        return copied.path;
-      }
-
-      final resized = decoded.width > _maxWidth
-          ? img.copyResize(decoded, width: _maxWidth)
-          : decoded;
-
-      final encoded = img.encodeJpg(resized, quality: _jpgQuality);
-      await File(targetPath).writeAsBytes(encoded, flush: true);
-      return targetPath;
+      final copied = await File(sourcePath).copy(targetPath);
+      return copied.path;
     } catch (_) {
       return null;
+    }
+  }
+
+  String _normalizedExtension(String path) {
+    final dot = path.lastIndexOf('.');
+    if (dot < 0 || dot >= path.length - 1) return '.jpg';
+    final raw = path.substring(dot).toLowerCase();
+    switch (raw) {
+      case '.jpg':
+      case '.jpeg':
+      case '.png':
+      case '.webp':
+      case '.heic':
+      case '.heif':
+        return raw;
+      default:
+        return '.jpg';
     }
   }
 

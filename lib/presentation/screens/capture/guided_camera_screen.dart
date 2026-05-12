@@ -4,9 +4,11 @@ import 'dart:math';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:image/image.dart' as img;
 
 import '../../widgets/capture_guidance_ring.dart';
 import 'capture_guide_plan.dart';
+import 'capture_profile.dart';
 
 class GuidedCameraShot {
   const GuidedCameraShot({
@@ -16,7 +18,18 @@ class GuidedCameraShot {
     this.level,
     this.brightness,
     this.detail,
+    this.width,
+    this.height,
+    required this.stable,
+    this.warnings = const [],
+    required this.profile,
     required this.qualityOk,
+    required this.captureStartTime,
+    required this.captureEndTime,
+    required this.captureDurationMs,
+    required this.cameraResolutionPreset,
+    required this.qualityGateEnabled,
+    required this.realtimeAnalysisEnabled,
   });
 
   final String sourcePath;
@@ -25,7 +38,18 @@ class GuidedCameraShot {
   final String? level;
   final double? brightness;
   final double? detail;
+  final int? width;
+  final int? height;
+  final bool stable;
+  final List<String> warnings;
+  final CaptureProfile profile;
   final bool qualityOk;
+  final DateTime captureStartTime;
+  final DateTime captureEndTime;
+  final int captureDurationMs;
+  final String cameraResolutionPreset;
+  final bool qualityGateEnabled;
+  final bool realtimeAnalysisEnabled;
 }
 
 class GuidedCameraSessionResult {
@@ -51,6 +75,8 @@ class GuidedCameraScreen extends StatefulWidget {
     required this.levelLabel,
     required this.angleDeg,
     required this.requireLiveQualityGate,
+    required this.captureProfile,
+    required this.existingLevelCounts,
   });
 
   final String projectName;
@@ -61,6 +87,8 @@ class GuidedCameraScreen extends StatefulWidget {
   final String levelLabel;
   final int angleDeg;
   final bool requireLiveQualityGate;
+  final CaptureProfile captureProfile;
+  final Map<String, int> existingLevelCounts;
 
   @override
   State<GuidedCameraScreen> createState() => _GuidedCameraScreenState();
@@ -69,8 +97,8 @@ class GuidedCameraScreen extends StatefulWidget {
 class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
   static const _minBrightness = 55.0;
   static const _minDetail = 12.0;
-  static const _analysisStep = 8;
-  static const _analysisInterval = Duration(milliseconds: 280);
+  static const _metricEpsilon = 0.5;
+  static const _simpleUi = true;
 
   CameraController? _controller;
   bool _initializing = true;
@@ -88,11 +116,39 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
   String? _errorText;
   Timer? _promptTimer;
   _GuidanceMessage? _temporaryGuidance;
+  DateTime _lastShotAt = DateTime.fromMillisecondsSinceEpoch(0);
+  int? _lastAverageHash;
   final List<GuidedCameraShot> _sessionShots = <GuidedCameraShot>[];
 
   int get _capturedTotal => widget.captureIndex + _sessionShots.length;
+  int get _recommendedMinPhotos => max(30, widget.captureProfile.recommendedMinPhotos);
+  int get _recommendedIdealPhotos => widget.captureProfile.recommendedIdealPhotos;
   CaptureGuideStep get _nextStep =>
       CaptureGuidePlan.stepForCaptureCount(_capturedTotal);
+  Duration get _minShotInterval =>
+      Duration(milliseconds: widget.captureProfile.minIntervalMs);
+  Duration get _stabilityProbeWindow =>
+      Duration(milliseconds: widget.captureProfile.stabilityProbeMs);
+  Duration get _preShotWait =>
+      Duration(milliseconds: widget.captureProfile.preShotWaitMs);
+  double get _stabilityThreshold => widget.captureProfile.stabilityThreshold;
+  int get _analysisStep => switch (widget.captureProfile) {
+    CaptureProfile.rapido => 10,
+    CaptureProfile.estable => 8,
+    CaptureProfile.maximaCalidad => 6,
+  };
+  Duration get _analysisInterval => switch (widget.captureProfile) {
+    CaptureProfile.rapido => const Duration(milliseconds: 420),
+    CaptureProfile.estable => const Duration(milliseconds: 300),
+    CaptureProfile.maximaCalidad => const Duration(milliseconds: 240),
+  };
+  ResolutionPreset get _cameraResolutionPreset => switch (widget.captureProfile) {
+    CaptureProfile.rapido => ResolutionPreset.high,
+    CaptureProfile.estable => ResolutionPreset.veryHigh,
+    CaptureProfile.maximaCalidad => ResolutionPreset.max,
+  };
+  bool get _realtimeAnalysisEnabled =>
+      widget.requireLiveQualityGate || widget.captureProfile != CaptureProfile.rapido;
 
   _SceneQuality get _quality {
     if (_brightness == null || _detail == null) return _SceneQuality.analyzing;
@@ -154,6 +210,46 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
 
   _GuidanceMessage get _activeGuidance =>
       _temporaryGuidance ?? _buildLiveGuidance();
+  String get _captureStateLabel {
+    if (_capturedTotal < _recommendedMinPhotos) return 'Insuficiente';
+    if (_capturedTotal < 45) return 'Aceptable';
+    if (_capturedTotal < 60) return 'Bueno';
+    return 'Excelente';
+  }
+
+  String get _rotatingTip {
+    const tips = [
+      'Manten el objeto centrado',
+      'Toma fotos alrededor del objeto',
+      'Cambia un poco la altura',
+      'Evita reflejos',
+      'No uses zoom',
+      'Manten buena iluminacion',
+      'No repitas el mismo angulo',
+    ];
+    return tips[_capturedTotal % tips.length];
+  }
+
+  Map<String, int> get _levelCounts {
+    final counts = <String, int>{
+      'low': widget.existingLevelCounts['low'] ?? 0,
+      'mid': widget.existingLevelCounts['mid'] ?? 0,
+      'top': widget.existingLevelCounts['top'] ?? 0,
+    };
+    for (final shot in _sessionShots) {
+      final level = shot.level;
+      if (level == null || !counts.containsKey(level)) continue;
+      counts[level] = (counts[level] ?? 0) + 1;
+    }
+    return counts;
+  }
+
+  String _levelStatus(String key) {
+    final count = _levelCounts[key] ?? 0;
+    if (count >= 10) return 'Completo';
+    if (count >= 4) return 'En progreso';
+    return 'Pendiente';
+  }
 
   @override
   void initState() {
@@ -257,85 +353,134 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
 
     final guidance = _activeGuidance;
 
-    return Column(
-      children: [
-        topBar,
-        const Spacer(),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 34),
-          child: AspectRatio(
-            aspectRatio: 1,
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                CaptureGuidanceRing(
-                  capturedSectors: _capturedSectors,
-                  suggestedAngle: _nextStep.angleDeg,
-                  highlightColor: guidance.color,
-                  objectOffset: _objectOffset,
-                ),
-                Column(
-                  mainAxisSize: MainAxisSize.min,
+    if (_simpleUi) {
+      return _buildSimpleOverlay(topBar, guidance);
+    }
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final ringWidth = (constraints.maxWidth - 68).clamp(210.0, 420.0);
+        final showExtraGuidance = constraints.maxHeight > 760;
+
+        return Column(
+          children: [
+            topBar,
+            const Spacer(),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 34),
+              child: SizedBox(
+                width: ringWidth,
+                height: ringWidth,
+                child: Stack(
+                  alignment: Alignment.center,
                   children: [
-                    Container(
-                      width: 20,
-                      height: 20,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: Colors.black.withValues(alpha: 0.42),
-                        border: Border.all(color: Colors.white24),
-                      ),
+                    CaptureGuidanceRing(
+                      capturedSectors: _capturedSectors,
+                      suggestedAngle: _nextStep.angleDeg,
+                      highlightColor: guidance.color,
+                      objectOffset: _objectOffset,
                     ),
-                    const SizedBox(height: 12),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 8,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.42),
-                        borderRadius: BorderRadius.circular(999),
-                        border: Border.all(color: Colors.white24),
-                      ),
-                      child: Text(
-                        '${_nextStep.level.label} - ${_nextStep.angleDeg} deg',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700,
+                    Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 20,
+                          height: 20,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: Colors.black.withValues(alpha: 0.42),
+                            border: Border.all(color: Colors.white24),
+                          ),
                         ),
-                      ),
+                        const SizedBox(height: 12),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 8,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.42),
+                            borderRadius: BorderRadius.circular(999),
+                            border: Border.all(color: Colors.white24),
+                          ),
+                          child: Text(
+                            '${_nextStep.level.label} - ${_nextStep.angleDeg} deg',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),
-              ],
+              ),
             ),
-          ),
-        ),
-        const SizedBox(height: 18),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _GuidanceBanner(message: guidance),
-              const SizedBox(height: 10),
-              Wrap(
+            SizedBox(height: showExtraGuidance ? 18 : 8),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _GuidanceBanner(message: guidance),
+                  const SizedBox(height: 8),
+                  Wrap(
                 alignment: WrapAlignment.center,
                 spacing: 8,
                 runSpacing: 8,
                 children: [
+                  _HudPill(
+                    label: 'Perfil',
+                    value: widget.captureProfile.label,
+                  ),
                   _HudPill(label: 'Nivel', value: _nextStep.level.label),
                   _HudPill(label: 'Sector', value: '${_nextStep.angleDeg} deg'),
                   _HudPill(label: 'Distancia', value: _distanceLabel),
                   _HudPill(
                     label: 'Progreso',
-                    value: '$_capturedTotal/${widget.targetMinPhotos}',
+                    value: '$_capturedTotal/$_recommendedIdealPhotos',
+                  ),
+                  _HudPill(
+                    label: 'Estado',
+                    value: _captureStateLabel,
                   ),
                 ],
               ),
-              const SizedBox(height: 14),
-              Row(
+                  if (showExtraGuidance) ...[
+                    const SizedBox(height: 8),
+                    _GuidanceBanner(
+                      message: _GuidanceMessage(
+                        text: _rotatingTip,
+                        color: const Color(0xFF76A7FF),
+                        icon: Icons.lightbulb_outline_rounded,
+                      ),
+                      compact: true,
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      alignment: WrapAlignment.center,
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        _HudPill(
+                          label: 'Nivel bajo',
+                          value: _levelStatus('low'),
+                        ),
+                        _HudPill(
+                          label: 'Nivel medio',
+                          value: _levelStatus('mid'),
+                        ),
+                        _HudPill(
+                          label: 'Nivel alto',
+                          value: _levelStatus('top'),
+                        ),
+                      ],
+                    ),
+                  ],
+                  const SizedBox(height: 10),
+                  Row(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   Expanded(
@@ -370,6 +515,73 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
                   ),
                 ],
               ),
+                ],
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildSimpleOverlay(Widget topBar, _GuidanceMessage guidance) {
+    final statusText = _simpleStatusText();
+    return Column(
+      children: [
+        topBar,
+        const Spacer(),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  color: guidance.color.withValues(alpha: 0.16),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: guidance.color.withValues(alpha: 0.35)),
+                ),
+                child: Text(
+                  statusText,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontWeight: FontWeight.w700, color: Colors.white),
+                ),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  _HudPill(label: 'Fotos', value: '$_capturedTotal'),
+                  const SizedBox(width: 8),
+                  _HudPill(label: 'Perfil', value: widget.captureProfile.label),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  const Spacer(),
+                  GestureDetector(
+                    onTap: _isCaptureAllowed ? _takePicture : _handleBlockedShot,
+                    child: _ShutterButton(
+                      enabled: _isCaptureAllowed,
+                      capturing: _capturing,
+                    ),
+                  ),
+                  const Spacer(),
+                  SizedBox(
+                    width: 132,
+                    child: _ControlButton(
+                      icon: Icons.check_rounded,
+                      label: 'Finalizar',
+                      emphasized: _sessionShots.isNotEmpty,
+                      onTap: _finishSession,
+                    ),
+                  ),
+                ],
+              ),
             ],
           ),
         ),
@@ -377,17 +589,25 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
     );
   }
 
+  String _simpleStatusText() {
+    if (_capturing) return 'Estabilizando';
+    if (_stability < _stabilityThreshold) return 'Estabilizando';
+    if (_quality == _SceneQuality.good) return 'Buena toma';
+    if (_nextStep.level == CaptureLevel.high) return 'Sube altura';
+    return 'Mueve alrededor';
+  }
+
   _GuidanceMessage _buildLiveGuidance() {
     if (_quality == _SceneQuality.critical) {
       if ((_brightness ?? 0) < (_minBrightness * 0.72)) {
         return const _GuidanceMessage(
-          text: 'Busca un poco mas de luz',
+          text: 'Sube la iluminacion antes de disparar',
           color: Color(0xFFFFB347),
           icon: Icons.wb_sunny_outlined,
         );
       }
       return const _GuidanceMessage(
-        text: 'Acercate un poco al objeto',
+        text: 'Acercate al objeto para ganar detalle',
         color: Color(0xFFFFB347),
         icon: Icons.zoom_in_rounded,
       );
@@ -395,7 +615,7 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
 
     if (_stability < 0.45) {
       return const _GuidanceMessage(
-        text: 'Falta estabilidad',
+        text: 'Estabiliza la camara y vuelve a intentar',
         color: Color(0xFFFFB347),
         icon: Icons.motion_photos_pause_rounded,
       );
@@ -465,10 +685,12 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
       );
       final controller = CameraController(
         camera,
-        ResolutionPreset.high,
+        _cameraResolutionPreset,
         enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.jpeg,
       );
       await controller.initialize();
+      await _configureControllerForCapture(controller);
       if (!mounted) {
         await controller.dispose();
         return;
@@ -492,11 +714,24 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
     if (controller == null || _streaming || !controller.value.isInitialized) {
       return;
     }
+    if (!_realtimeAnalysisEnabled) {
+      return;
+    }
     try {
       await controller.startImageStream(_onFrame);
       _streaming = true;
     } catch (_) {
       _streaming = false;
+    }
+  }
+
+  Future<void> _configureControllerForCapture(CameraController controller) async {
+    try {
+      await controller.setFlashMode(FlashMode.off);
+      await controller.setFocusMode(FocusMode.auto);
+      await controller.setExposureMode(ExposureMode.auto);
+    } catch (_) {
+      // Some devices do not expose all controls.
     }
   }
 
@@ -524,6 +759,14 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
       final metrics = _estimateMetrics(image);
       if (metrics == null || !mounted) return;
       final stability = _estimateStability(metrics.balanceX, metrics.balanceY);
+      final prevBrightness = _brightness;
+      final prevDetail = _detail;
+      final changedEnough =
+          prevBrightness == null ||
+          prevDetail == null ||
+          (prevBrightness - metrics.brightness).abs() > _metricEpsilon ||
+          (prevDetail - metrics.detail).abs() > _metricEpsilon;
+      if (!changedEnough) return;
       setState(() {
         _brightness = metrics.brightness;
         _detail = metrics.detail;
@@ -634,10 +877,44 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
 
     setState(() => _capturing = true);
     try {
+      final captureStart = DateTime.now();
+      final now = captureStart;
+      if (now.difference(_lastShotAt) < _minShotInterval) {
+        _showTemporaryGuidance(
+          const _GuidanceMessage(
+            text: 'Espera un instante entre tomas',
+            color: Color(0xFFFFB347),
+            icon: Icons.timer_outlined,
+          ),
+        );
+        return;
+      }
+
+      if (!await _waitForStableScene()) {
+        _showTemporaryGuidance(
+          const _GuidanceMessage(
+            text: 'Espera, estabilizando camara...',
+            color: Color(0xFFFFB347),
+            icon: Icons.motion_photos_pause_rounded,
+          ),
+        );
+        return;
+      }
+
       await _stopImageStreamIfNeeded();
+      await _configureControllerForCapture(controller);
+      await Future<void>.delayed(_preShotWait);
       final shot = await controller.takePicture();
+      final captureEnd = DateTime.now();
+      final captureDurationMs = captureEnd
+          .difference(captureStart)
+          .inMilliseconds
+          .clamp(0, 600000)
+          .toInt();
+      _lastShotAt = captureEnd;
       if (!mounted) return;
-      final accepted = await _validateShot(shot.path);
+      final diagnostics = await _analyzeShot(path: shot.path);
+      final accepted = await _validateShot(shot.path, diagnostics);
       if (!mounted) return;
       if (!accepted) {
         await _deleteIfExists(shot.path);
@@ -660,9 +937,21 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
             level: step.level.key,
             brightness: _brightness,
             detail: _detail,
+            width: diagnostics.width,
+            height: diagnostics.height,
+            stable: _stability >= _stabilityThreshold,
+            warnings: diagnostics.warnings,
+            profile: widget.captureProfile,
             qualityOk: _quality == _SceneQuality.good,
+            captureStartTime: captureStart,
+            captureEndTime: captureEnd,
+            captureDurationMs: captureDurationMs,
+            cameraResolutionPreset: _cameraResolutionPreset.name,
+            qualityGateEnabled: widget.requireLiveQualityGate,
+            realtimeAnalysisEnabled: _realtimeAnalysisEnabled,
           ),
         );
+        _lastAverageHash = diagnostics.averageHash;
         _showCaptureFx = true;
       });
       Future<void>.delayed(const Duration(milliseconds: 220), () {
@@ -690,6 +979,111 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
     }
   }
 
+  Future<bool> _waitForStableScene() async {
+    if (_quality == _SceneQuality.critical) return false;
+    if (_stability >= _stabilityThreshold) return true;
+
+    final start = DateTime.now();
+    while (DateTime.now().difference(start) < _stabilityProbeWindow) {
+      await Future<void>.delayed(const Duration(milliseconds: 70));
+      if (!mounted) return false;
+      if (_quality == _SceneQuality.critical) return false;
+      if (_stability >= _stabilityThreshold) return true;
+    }
+    return false;
+  }
+
+  Future<_ShotDiagnostics> _analyzeShot({required String path}) async {
+    try {
+      final bytes = await File(path).readAsBytes();
+      final decoded = img.decodeImage(bytes);
+      if (decoded == null) return const _ShotDiagnostics.empty();
+
+      final small = img.copyResize(decoded, width: 96);
+      final brightness = _estimateBrightnessImage(small);
+      final sharpness = _estimateSharpnessImage(small);
+      final hash = _averageHash8(small);
+      final similarity = _lastAverageHash == null
+          ? 0.0
+          : _hashSimilarity(_lastAverageHash!, hash);
+
+      final warnings = <String>[];
+      if (brightness < 48) warnings.add('demasiado_oscura');
+      if (brightness > 212) warnings.add('demasiado_clara');
+      if (sharpness < 8.5) warnings.add('borrosa');
+      if (similarity > 0.93) warnings.add('muy_parecida_a_anterior');
+
+      return _ShotDiagnostics(
+        width: decoded.width,
+        height: decoded.height,
+        averageHash: hash,
+        warnings: warnings,
+      );
+    } catch (_) {
+      return const _ShotDiagnostics.empty();
+    }
+  }
+
+  double _estimateBrightnessImage(img.Image image) {
+    double sum = 0;
+    final count = image.width * image.height;
+    for (int y = 0; y < image.height; y++) {
+      for (int x = 0; x < image.width; x++) {
+        final px = image.getPixel(x, y);
+        sum += (0.2126 * px.r + 0.7152 * px.g + 0.0722 * px.b);
+      }
+    }
+    return sum / max(1, count);
+  }
+
+  double _estimateSharpnessImage(img.Image image) {
+    double sum = 0;
+    int count = 0;
+    int lumAt(int x, int y) {
+      final px = image.getPixel(x, y);
+      return (0.2126 * px.r + 0.7152 * px.g + 0.0722 * px.b).round();
+    }
+
+    for (int y = 0; y < image.height - 1; y++) {
+      for (int x = 0; x < image.width - 1; x++) {
+        final l = lumAt(x, y);
+        final dx = (l - lumAt(x + 1, y)).abs();
+        final dy = (l - lumAt(x, y + 1)).abs();
+        sum += dx + dy;
+        count++;
+      }
+    }
+    return sum / max(1, count);
+  }
+
+  int _averageHash8(img.Image image) {
+    final resized = img.copyResize(image, width: 8, height: 8);
+    final luminances = <double>[];
+    for (int y = 0; y < resized.height; y++) {
+      for (int x = 0; x < resized.width; x++) {
+        final px = resized.getPixel(x, y);
+        luminances.add(0.2126 * px.r + 0.7152 * px.g + 0.0722 * px.b);
+      }
+    }
+    final avg = luminances.reduce((a, b) => a + b) / luminances.length;
+    int hash = 0;
+    for (int i = 0; i < luminances.length; i++) {
+      if (luminances[i] >= avg) {
+        hash |= (1 << i);
+      }
+    }
+    return hash;
+  }
+
+  double _hashSimilarity(int a, int b) {
+    final xor = a ^ b;
+    int distance = 0;
+    for (int i = 0; i < 64; i++) {
+      if (((xor >> i) & 1) == 1) distance++;
+    }
+    return 1 - (distance / 64.0);
+  }
+
   void _handleBlockedShot() {
     _showTemporaryGuidance(
       _quality == _SceneQuality.critical
@@ -699,15 +1093,16 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
               icon: Icons.block_rounded,
             )
           : const _GuidanceMessage(
-              text: 'Espera una escena mas estable',
+              text: 'Espera, estabilizando camara...',
               color: Color(0xFFFFB347),
               icon: Icons.motion_photos_pause_rounded,
             ),
     );
   }
 
-  Future<bool> _validateShot(String path) async {
+  Future<bool> _validateShot(String path, _ShotDiagnostics diagnostics) async {
     final guidance = _activeGuidance;
+    if (!mounted) return false;
 
     final result = await showModalBottomSheet<bool>(
       context: context,
@@ -768,6 +1163,13 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
                   ],
                 ),
                 const SizedBox(height: 14),
+                if (diagnostics.warnings.isNotEmpty) ...[
+                  Text(
+                    'Advertencias: ${diagnostics.warnings.join(', ')}',
+                    style: const TextStyle(color: Color(0xFFFFB347), fontSize: 12),
+                  ),
+                  const SizedBox(height: 10),
+                ],
                 Row(
                   children: [
                     Expanded(
@@ -898,10 +1300,59 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen> {
       );
       return;
     }
+    final checklist = _buildFinishChecklist();
+    final shouldFinalize = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Checklist de captura'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Fotos totales: $_capturedTotal'),
+            Text('Estado global: $_captureStateLabel'),
+            const SizedBox(height: 8),
+            for (final line in checklist) Text('- $line'),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Continuar capturando'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Finalizar'),
+          ),
+        ],
+      ),
+    );
+    if (shouldFinalize != true) return;
+
     _submitted = true;
     await _stopImageStreamIfNeeded();
     if (!mounted) return;
     Navigator.of(context).pop(GuidedCameraSessionResult(shots: _sessionShots));
+  }
+
+  List<String> _buildFinishChecklist() {
+    final lines = <String>[];
+    lines.add('Estado: $_captureStateLabel');
+    if (_capturedTotal < _recommendedMinPhotos) {
+      lines.add('Faltan fotos');
+    }
+    final low = _levelStatus('low');
+    final top = _levelStatus('top');
+    if (top == 'Pendiente') {
+      lines.add('Toma algunas desde arriba');
+    } else if (low == 'Pendiente') {
+      lines.add('Toma algunas desde abajo');
+    } else if (_captureStateLabel == 'Insuficiente') {
+      lines.add('Toma algunas mas alrededor');
+    } else {
+      lines.add('Puedes finalizar');
+    }
+    return lines;
   }
 
   Future<void> _handleCloseRequested() async {
@@ -1285,4 +1736,24 @@ class _FrameMetrics {
   final double detail;
   final double balanceX;
   final double balanceY;
+}
+
+class _ShotDiagnostics {
+  const _ShotDiagnostics({
+    required this.width,
+    required this.height,
+    required this.averageHash,
+    required this.warnings,
+  });
+
+  const _ShotDiagnostics.empty()
+    : width = 0,
+      height = 0,
+      averageHash = 0,
+      warnings = const [];
+
+  final int width;
+  final int height;
+  final int averageHash;
+  final List<String> warnings;
 }

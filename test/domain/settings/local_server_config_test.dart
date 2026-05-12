@@ -10,6 +10,13 @@ void main() {
     expect(config.endpoint, 'http://127.0.0.1:8000');
   });
 
+  test('bundles the defense API key as the effective default', () {
+    expect(
+      LocalServerDefaults.effectiveApiKey,
+      'local3d_2026_Defensa_ClaveFuerte_7391',
+    );
+  });
+
   test(
     'fromJson keeps backward compatibility with legacy host and port fields',
     () {
@@ -27,6 +34,14 @@ void main() {
     final normalized = LocalServerConfig.normalizeBaseUrl('nombre-pc:8000');
 
     expect(normalized, 'http://nombre-pc:8000');
+  });
+
+  test('preserves API base path prefixes when provided', () {
+    final normalized = LocalServerConfig.normalizeBaseUrl(
+      'http://nombre-pc:8000/api/v1/',
+    );
+
+    expect(normalized, 'http://nombre-pc:8000/api/v1');
   });
 
   test('strips pasted health paths and preserves protocol and port', () {

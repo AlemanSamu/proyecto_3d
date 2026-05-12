@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:proyecto_3d/domain/projects/backend_processing_status.dart';
+import 'package:proyecto_3d/domain/projects/project_processing.dart';
 
 void main() {
   test('parses snake_case backend payloads', () {
@@ -29,5 +30,17 @@ void main() {
     expect(status.state, BackendJobState.failed);
     expect(status.message, 'No hay imagenes');
     expect(status.isFailed, isTrue);
+  });
+
+  test('uses current_stage to infer detailed pipeline stage', () {
+    final status = BackendProcessingStatus.fromJson({
+      'status': 'processing',
+      'current_stage': 'export',
+      'message': 'Exportando modelo final',
+    });
+
+    expect(status.state, BackendJobState.running);
+    expect(status.stage, ProcessingStage.packaging);
+    expect(status.message, 'Exportando modelo final');
   });
 }

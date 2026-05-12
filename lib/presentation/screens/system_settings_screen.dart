@@ -148,9 +148,9 @@ class _SystemSettingsScreenState extends ConsumerState<SystemSettingsScreen> {
                 keyboardType: TextInputType.url,
                 decoration: const InputDecoration(
                   labelText: 'URL base del backend',
-                  hintText: 'http://nombre-pc:8000',
+                  hintText: 'http://192.168.1.120:8000',
                   helperText:
-                      'Ejemplos: http://10.221.168.227:8000 o http://nombre-pc:8000',
+                      'Android: usa http://IP-DE-TU-PC:8000 en celular fisico o http://10.0.2.2:8000 en emulador. Tambien funciona con /api/v1.',
                 ),
               ),
               const SizedBox(height: 10),

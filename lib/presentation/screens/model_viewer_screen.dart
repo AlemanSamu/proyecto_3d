@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:model_viewer_plus/model_viewer_plus.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../../domain/projects/project_model.dart';
 import '../providers/project_providers.dart';
@@ -23,6 +24,7 @@ class ModelViewerScreen extends ConsumerStatefulWidget {
 
 class _ModelViewerScreenState extends ConsumerState<ModelViewerScreen> {
   bool _downloading = false;
+  bool _exportingModel = false;
   String? _errorMessage;
 
   @override
@@ -38,7 +40,8 @@ class _ModelViewerScreenState extends ConsumerState<ModelViewerScreen> {
     final modelPath = project.modelPath;
     final modelExt = _fileExtension(modelPath);
     final fileExists = modelPath != null && File(modelPath).existsSync();
-    final isSimulatedGlb = modelExt == 'glb' && _looksLikeSimulatedGlb(modelPath);
+    final isSimulatedGlb =
+        modelExt == 'glb' && _looksLikeSimulatedGlb(modelPath);
 
     return Scaffold(
       appBar: AppBar(title: const Text('Visor 3D')),
@@ -73,7 +76,9 @@ class _ModelViewerScreenState extends ConsumerState<ModelViewerScreen> {
                   'Aun no hay un modelo descargado en el dispositivo para este proyecto.',
               icon: Icons.cloud_download_outlined,
               actionLabel: _downloading ? null : 'Descargar del backend',
-              onAction: _downloading ? null : () => _downloadLatestModel(project),
+              onAction: _downloading
+                  ? null
+                  : () => _downloadLatestModel(project),
             )
           else if (isSimulatedGlb)
             StateFeedbackCard(
@@ -126,7 +131,33 @@ class _ModelViewerScreenState extends ConsumerState<ModelViewerScreen> {
                           )
                         : const Icon(Icons.sync_rounded),
                     label: Text(
-                      _downloading ? 'Actualizando...' : 'Actualizar desde backend',
+                      _downloading
+                          ? 'Actualizando...'
+                          : 'Actualizar desde backend',
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: _downloading || _exportingModel || !fileExists
+                        ? null
+                        : () => _exportLocalModel(project),
+                    icon: _exportingModel
+                        ? const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Icon(Icons.download_rounded),
+                    label: Text(
+                      _exportingModel
+                          ? 'Exportando modelo...'
+                          : 'Exportar archivo 3D',
                     ),
                   ),
                 ),
@@ -154,6 +185,65 @@ class _ModelViewerScreenState extends ConsumerState<ModelViewerScreen> {
       _downloading = false;
       _errorMessage = result.success ? null : result.message;
     });
+  }
+
+  Future<void> _exportLocalModel(ProjectModel project) async {
+    if (_exportingModel) return;
+    final sourcePath = project.modelPath;
+    if (sourcePath == null || sourcePath.trim().isEmpty) {
+      setState(() {
+        _errorMessage = 'No hay un modelo local para exportar.';
+      });
+      return;
+    }
+
+    final sourceFile = File(sourcePath);
+    if (!await sourceFile.exists()) {
+      setState(() {
+        _errorMessage = 'No se encontro el archivo del modelo local.';
+      });
+      return;
+    }
+
+    setState(() {
+      _exportingModel = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final docs = await getApplicationDocumentsDirectory();
+      final exportDir = Directory(
+        '${docs.path}${Platform.pathSeparator}exports'
+        '${Platform.pathSeparator}${project.id}'
+        '${Platform.pathSeparator}models',
+      );
+      if (!await exportDir.exists()) {
+        await exportDir.create(recursive: true);
+      }
+
+      final extension = _fileExtension(sourcePath);
+      final safeExtension = extension == 'desconocido' ? 'glb' : extension;
+      final exportedPath =
+          '${exportDir.path}${Platform.pathSeparator}'
+          'model_${DateTime.now().millisecondsSinceEpoch}.$safeExtension';
+      await sourceFile.copy(exportedPath);
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Modelo exportado en: $exportedPath')),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = 'No se pudo exportar el archivo del modelo 3D.';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _exportingModel = false;
+        });
+      }
+    }
   }
 
   String _fileExtension(String? path) {

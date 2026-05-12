@@ -53,7 +53,10 @@ class LocalServerSettingsState {
 class LocalServerSettingsNotifier
     extends StateNotifier<LocalServerSettingsState> {
   LocalServerSettingsNotifier({
-    required Future<String> Function(LocalServerConfig config) pingBackend,
+    required Future<BackendConnectionProbeResult> Function(
+      LocalServerConfig config,
+    )
+    pingBackend,
     required Future<void> Function(LocalServerConfig config) persistConfig,
     required LocalServerConfig initialConfig,
     required LocalServerConfig defaultConfig,
@@ -66,7 +69,8 @@ class LocalServerSettingsNotifier
          ),
        );
 
-  final Future<String> Function(LocalServerConfig config) _pingBackend;
+  final Future<BackendConnectionProbeResult> Function(LocalServerConfig config)
+  _pingBackend;
   final Future<void> Function(LocalServerConfig config) _persistConfig;
 
   void updateConfig(LocalServerConfig config) {
@@ -120,12 +124,17 @@ class LocalServerSettingsNotifier
 
     final config = state.config;
     try {
-      final message = await _pingBackend(config);
+      final result = await _pingBackend(config);
+      final resolvedConfig = result.resolvedConfig ?? config;
       state = state.copyWith(
+        config: resolvedConfig,
         health: ServerConnectionHealth.reachable,
-        lastMessage: message,
+        lastMessage: result.message,
         lastCheckedAt: DateTime.now(),
       );
+      if (resolvedConfig.endpoint != config.endpoint) {
+        unawaited(_persistConfig(resolvedConfig));
+      }
     } on BackendApiException catch (error) {
       state = state.copyWith(
         health: ServerConnectionHealth.unreachable,
@@ -152,7 +161,10 @@ class LocalServerSettingsNotifier
 }
 
 final defaultLocalServerConfigProvider = Provider<LocalServerConfig>((ref) {
-  return const LocalServerConfig();
+  return LocalServerConfig(
+    baseUrl: LocalServerDefaults.effectiveBaseUrl,
+    apiKey: LocalServerDefaults.effectiveApiKey,
+  );
 });
 
 final localServerConfigStoreProvider = Provider<LocalServerConfigStore>((ref) {
@@ -195,7 +207,7 @@ final localServerSettingsProvider =
             config: config,
             paths: ref.read(localBackendApiPathsProvider),
           );
-          return service.ping().whenComplete(service.dispose);
+          return service.probeConnection().whenComplete(service.dispose);
         },
       );
     });

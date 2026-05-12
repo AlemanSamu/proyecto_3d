@@ -164,11 +164,19 @@ class _GuidedCameraScreenState extends State<GuidedCameraScreen>
 
       final controller = CameraController(
         selected,
-        ResolutionPreset.high,
+        ResolutionPreset.max,
         enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.jpeg,
       );
 
       await controller.initialize();
+      try {
+        await controller.setFlashMode(FlashMode.off);
+        await controller.setFocusMode(FocusMode.auto);
+        await controller.setExposureMode(ExposureMode.auto);
+      } catch (_) {
+        // Best effort per device.
+      }
       if (!mounted) {
         await controller.dispose();
         return;
