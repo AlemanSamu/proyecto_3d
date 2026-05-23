@@ -150,8 +150,10 @@ extension ProjectWorkflowX on ProjectModel {
       ProjectFlowStep(
         id: ProjectFlowStepId.model,
         title: 'Modelo',
-        subtitle: hasGeneratedModel
+        subtitle: (modelPath ?? '').trim().isNotEmpty
             ? 'Artefacto local disponible'
+            : hasGeneratedModel
+            ? 'Disponible para descargar'
             : 'Pendiente de generacion',
         state: _modelStepState(),
       ),

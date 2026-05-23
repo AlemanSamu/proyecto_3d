@@ -1,8 +1,16 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../domain/projects/project_model.dart';
+import '../../../domain/projects/reconstruction_result.dart';
+import '../../../domain/projects/project_workflow.dart';
 import '../../providers/project_providers.dart';
+import '../../utils/presentation_formatters.dart';
+import '../capture/capture_screen.dart';
+import '../model_viewer_screen.dart';
+import '../project_workspace_screen.dart';
 
 class HistoryScreen extends ConsumerWidget {
   const HistoryScreen({super.key});
@@ -10,86 +18,122 @@ class HistoryScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final projects = ref.watch(projectsProvider);
-    final notifier = ref.read(projectsProvider.notifier);
+    final sorted = [...projects]
+      ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Historial de Proyectos')),
-      body: projects.isEmpty
+      appBar: AppBar(title: const Text('Historial')),
+      body: sorted.isEmpty
           ? const Center(child: Text('No hay proyectos registrados.'))
           : ListView.separated(
               padding: const EdgeInsets.all(16),
+              itemCount: sorted.length,
+              separatorBuilder: (_, _) => const SizedBox(height: 10),
               itemBuilder: (_, index) {
-                final project = projects[index];
-                final color = _statusColor(project.status, Theme.of(context));
+                final project = sorted[index];
+                final thumb = _thumbnailPath(project);
 
                 return Card(
-                  child: ListTile(
-                    leading: CircleAvatar(
-                      backgroundColor: color.withValues(alpha: 0.2),
-                      child: Icon(Icons.folder_open, color: color),
-                    ),
-                    title: Text(project.name),
-                    subtitle: Text(
-                      '${_formatDate(project.createdAt)} | ${project.status.label}',
-                    ),
-                    trailing: IconButton(
-                      tooltip: 'Eliminar',
-                      icon: const Icon(Icons.delete_outline),
-                      onPressed: () async {
-                        final confirm = await showDialog<bool>(
-                          context: context,
-                          builder: (ctx) => AlertDialog(
-                            title: const Text('Eliminar proyecto'),
-                            content: Text(
-                              'Se eliminaran ${project.imagePaths.length} capturas de "${project.name}". Esta accion no se puede deshacer.',
-                            ),
-                            actions: [
-                              TextButton(
-                                onPressed: () => Navigator.of(ctx).pop(false),
-                                child: const Text('Cancelar'),
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(12),
+                          child: SizedBox(
+                            width: 72,
+                            height: 72,
+                            child: thumb == null
+                                ? Container(
+                                    color: const Color(0xFF101721),
+                                    alignment: Alignment.center,
+                                    child: const Icon(Icons.photo_outlined),
+                                  )
+                                : Image.file(
+                                    File(thumb),
+                                    fit: BoxFit.cover,
+                                    cacheWidth: 280,
+                                    cacheHeight: 280,
+                                  ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                project.name,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                ),
                               ),
-                              FilledButton(
-                                onPressed: () => Navigator.of(ctx).pop(true),
-                                child: const Text('Eliminar'),
+                              const SizedBox(height: 4),
+                              Text(formatDateTime(project.updatedAt)),
+                              const SizedBox(height: 4),
+                              Text(project.reconstructionResult.label),
+                              const SizedBox(height: 8),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: OutlinedButton(
+                                      onPressed: () =>
+                                          _openResult(context, project),
+                                      child: const Text('Ver resultado'),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: ElevatedButton(
+                                      onPressed: () {
+                                        Navigator.of(context).push(
+                                          MaterialPageRoute(
+                                            builder: (_) => CaptureScreen(
+                                              initialProjectId: project.id,
+                                            ),
+                                          ),
+                                        );
+                                      },
+                                      child: const Text('Reintentar'),
+                                    ),
+                                  ),
+                                ],
                               ),
                             ],
                           ),
-                        );
-                        if (confirm != true || !context.mounted) return;
-                        notifier.deleteProject(project.id);
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Proyecto eliminado.')),
-                        );
-                      },
+                        ),
+                      ],
                     ),
                   ),
                 );
               },
-              separatorBuilder: (context, index) => const SizedBox(height: 10),
-              itemCount: projects.length,
             ),
     );
   }
 
-  String _formatDate(DateTime value) {
-    final d = value.toLocal();
-    final mm = d.month.toString().padLeft(2, '0');
-    final dd = d.day.toString().padLeft(2, '0');
-    final hh = d.hour.toString().padLeft(2, '0');
-    final mi = d.minute.toString().padLeft(2, '0');
-    return '$dd/$mm/${d.year} $hh:$mi';
+  String? _thumbnailPath(ProjectModel project) {
+    if (project.coverImagePath != null && project.coverImagePath!.isNotEmpty) {
+      return project.coverImagePath;
+    }
+    if (project.photos.isEmpty) return null;
+    return project.photos.last.thumbnailPath;
   }
 
-  Color _statusColor(ProjectStatus status, ThemeData theme) {
-    return switch (status) {
-      ProjectStatus.draft => const Color(0xFF9AA5BD),
-      ProjectStatus.capturing => theme.colorScheme.primary,
-      ProjectStatus.reviewReady => const Color(0xFF8F7BFF),
-      ProjectStatus.readyToProcess => const Color(0xFF4D92FF),
-      ProjectStatus.processing => Colors.orangeAccent,
-      ProjectStatus.modelGenerated => const Color(0xFF41D4B8),
-      ProjectStatus.exported => Colors.lightGreenAccent,
-      ProjectStatus.error => Colors.redAccent,
-    };
+  Future<void> _openResult(BuildContext context, ProjectModel project) async {
+    if (project.hasGeneratedModel) {
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => ModelViewerScreen(projectId: project.id),
+        ),
+      );
+      return;
+    }
+
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ProjectWorkspaceScreen(projectId: project.id),
+      ),
+    );
   }
 }

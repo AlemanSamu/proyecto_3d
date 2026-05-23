@@ -17,7 +17,7 @@ class ProjectCoverageSummary {
     flaggedForRetake: 0,
     uniqueAngles: 0,
     uniqueLevels: 0,
-    minRecommendedPhotos: 24,
+    minRecommendedPhotos: 20,
     completion: 0,
   );
 
@@ -78,7 +78,7 @@ class ProjectCoverageSummary {
 
   factory ProjectCoverageSummary.fromPhotos(
     List<CapturePhoto> photos, {
-    int minRecommendedPhotos = 24,
+    int minRecommendedPhotos = 20,
   }) {
     final accepted = photos.where((photo) => photo.accepted).length;
     final flagged = photos.where((photo) => photo.flaggedForRetake).length;

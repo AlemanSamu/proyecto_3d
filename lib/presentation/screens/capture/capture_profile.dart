@@ -1,5 +1,40 @@
 enum CaptureProfile { rapido, estable, maximaCalidad }
 
+enum CaptureResolution { high, veryHigh, ultraHigh, max }
+
+extension CaptureResolutionX on CaptureResolution {
+  String get label => switch (this) {
+    CaptureResolution.high => 'Alta',
+    CaptureResolution.veryHigh => '1080p real',
+    CaptureResolution.ultraHigh => '4K / Ultra',
+    CaptureResolution.max => 'Maxima del dispositivo',
+  };
+
+  String get compactLabel => switch (this) {
+    CaptureResolution.high => 'Alta',
+    CaptureResolution.veryHigh => '1080p',
+    CaptureResolution.ultraHigh => '4K',
+    CaptureResolution.max => 'Max',
+  };
+
+  String get shortHint => switch (this) {
+    CaptureResolution.high => 'Captura rapida con menor peso.',
+    CaptureResolution.veryHigh => 'Buen minimo para reconstruccion dense.',
+    CaptureResolution.ultraHigh => 'Mas detalle para COLMAP.',
+    CaptureResolution.max => 'Usa la mejor resolucion disponible.',
+  };
+
+  static CaptureResolution fromKey(String? key) {
+    return switch (key) {
+      'high' => CaptureResolution.high,
+      'veryHigh' => CaptureResolution.veryHigh,
+      'ultraHigh' => CaptureResolution.ultraHigh,
+      'max' => CaptureResolution.max,
+      _ => CaptureResolution.max,
+    };
+  }
+}
+
 extension CaptureProfileX on CaptureProfile {
   String get key => switch (this) {
     CaptureProfile.rapido => 'rapido',
@@ -44,15 +79,15 @@ extension CaptureProfileX on CaptureProfile {
   };
 
   int get recommendedMinPhotos => switch (this) {
-    CaptureProfile.rapido => 30,
-    CaptureProfile.estable => 36,
-    CaptureProfile.maximaCalidad => 45,
+    CaptureProfile.rapido => 20,
+    CaptureProfile.estable => 20,
+    CaptureProfile.maximaCalidad => 20,
   };
 
   int get recommendedIdealPhotos => switch (this) {
-    CaptureProfile.rapido => 45,
-    CaptureProfile.estable => 52,
-    CaptureProfile.maximaCalidad => 60,
+    CaptureProfile.rapido => 36,
+    CaptureProfile.estable => 40,
+    CaptureProfile.maximaCalidad => 45,
   };
 
   List<String> get warnings => const [
@@ -61,4 +96,13 @@ extension CaptureProfileX on CaptureProfile {
     'Manten buena iluminacion',
     'No repitas el mismo angulo',
   ];
+
+  static CaptureProfile fromKey(String? key) {
+    return switch (key) {
+      'rapido' => CaptureProfile.rapido,
+      'estable' => CaptureProfile.estable,
+      'maxima_calidad' => CaptureProfile.maximaCalidad,
+      _ => CaptureProfile.estable,
+    };
+  }
 }

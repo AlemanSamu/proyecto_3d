@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../domain/projects/project_model.dart';
 import '../../domain/projects/project_processing.dart';
 import '../../domain/projects/project_workflow.dart';
+import '../../domain/projects/reconstruction_result.dart';
 import '../providers/project_providers.dart';
 import '../utils/presentation_formatters.dart';
 import '../widgets/app_info_chip.dart';
@@ -68,6 +69,7 @@ class _ProcessingProgressScreenState
 
     final progress = project.processingState.progress.clamp(0, 1).toDouble();
     final progressPct = (progress * 100).round();
+    final reconstruction = project.reconstructionResult;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Progreso de procesamiento')),
@@ -79,12 +81,14 @@ class _ProcessingProgressScreenState
             subtitle:
                 'Seguimiento en tiempo real del backend local para reconstruccion 3D.',
             badge: AppSectionBadge(
-              label: project.status.label,
+              label: reconstruction.label,
               color: StatusBadge.colorFor(project.status),
               icon: Icons.sync_rounded,
             ),
             trailing: FilledButton.icon(
-              onPressed: _refreshing ? null : () => _refreshStatus(manual: true),
+              onPressed: _refreshing
+                  ? null
+                  : () => _refreshStatus(manual: true),
               icon: _refreshing
                   ? const SizedBox(
                       width: 14,
@@ -191,14 +195,18 @@ class _ProcessingProgressScreenState
             const SizedBox(height: 12),
             AppSurfaceCard(
               title: 'Modelo listo',
-              subtitle: project.modelPath ?? 'Modelo descargado del backend.',
+              subtitle:
+                  project.modelPath ??
+                  project.remoteModelUrl ??
+                  'Modelo disponible en el backend.',
               child: SizedBox(
                 width: double.infinity,
                 child: ElevatedButton.icon(
                   onPressed: () {
                     Navigator.of(context).push(
                       MaterialPageRoute(
-                        builder: (_) => ModelViewerScreen(projectId: project.id),
+                        builder: (_) =>
+                            ModelViewerScreen(projectId: project.id),
                       ),
                     );
                   },

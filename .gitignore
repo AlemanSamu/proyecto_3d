@@ -48,3 +48,30 @@ app.*.map.json
 /android/key.properties
 *.jks
 *.keystore
+
+# Python
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+*.pyo
+
+# JavaScript / Node
+node_modules/
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Generic temp / generated output
+/dist/
+/temp/
+tmp/
+*.tmp
+
+# Heavy generated mobile artifacts
+*.apk
+*.aab
+*.ipa

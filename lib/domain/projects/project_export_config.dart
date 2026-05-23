@@ -1,25 +1,19 @@
-enum ExportTargetFormat { glb, obj, fbx, usdz }
+enum ExportTargetFormat { glb, obj }
 
 extension ExportTargetFormatX on ExportTargetFormat {
   String get value => switch (this) {
     ExportTargetFormat.glb => 'glb',
     ExportTargetFormat.obj => 'obj',
-    ExportTargetFormat.fbx => 'fbx',
-    ExportTargetFormat.usdz => 'usdz',
   };
 
   String get label => switch (this) {
     ExportTargetFormat.glb => 'GLB',
     ExportTargetFormat.obj => 'OBJ',
-    ExportTargetFormat.fbx => 'FBX',
-    ExportTargetFormat.usdz => 'USDZ',
   };
 
   static ExportTargetFormat fromValue(String? value) {
     return switch (value) {
       'obj' => ExportTargetFormat.obj,
-      'fbx' => ExportTargetFormat.fbx,
-      'usdz' => ExportTargetFormat.usdz,
       _ => ExportTargetFormat.glb,
     };
   }

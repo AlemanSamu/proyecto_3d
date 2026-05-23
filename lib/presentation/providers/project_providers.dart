@@ -175,6 +175,9 @@ class ProjectsNotifier extends StateNotifier<List<ProjectModel>> {
     String? level,
     double brightness = 0,
     double sharpness = 0,
+    int width = 0,
+    int height = 0,
+    List<String> warnings = const [],
     bool accepted = true,
     bool flaggedForRetake = false,
   }) {
@@ -192,6 +195,9 @@ class ProjectsNotifier extends StateNotifier<List<ProjectModel>> {
         level: level,
         brightness: brightness,
         sharpness: sharpness,
+        width: width,
+        height: height,
+        warnings: warnings,
         accepted: accepted,
         flaggedForRetake: flaggedForRetake,
         createdAt: DateTime.now(),
@@ -201,6 +207,11 @@ class ProjectsNotifier extends StateNotifier<List<ProjectModel>> {
 
   void addCapturePhoto(String projectId, CapturePhoto photo) {
     _updateProject(projectId, (project) {
+      if (project.photos.any(
+        (existing) => existing.originalPath == photo.originalPath,
+      )) {
+        return project;
+      }
       final nextPhotos = [...project.photos, photo];
       return project.copyWith(
         photos: nextPhotos,

@@ -6,6 +6,7 @@ import 'package:model_viewer_plus/model_viewer_plus.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../../domain/projects/project_model.dart';
+import '../../domain/projects/reconstruction_result.dart';
 import '../providers/project_providers.dart';
 import '../widgets/app_page_header.dart';
 import '../widgets/app_section_badge.dart';
@@ -42,6 +43,7 @@ class _ModelViewerScreenState extends ConsumerState<ModelViewerScreen> {
     final fileExists = modelPath != null && File(modelPath).existsSync();
     final isSimulatedGlb =
         modelExt == 'glb' && _looksLikeSimulatedGlb(modelPath);
+    final reconstructionState = project.reconstructionResult;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Visor 3D')),
@@ -52,7 +54,7 @@ class _ModelViewerScreenState extends ConsumerState<ModelViewerScreen> {
             title: project.name,
             subtitle: 'Visualizacion del modelo final generado por el backend.',
             badge: AppSectionBadge(
-              label: project.status.label,
+              label: reconstructionState.label,
               color: StatusBadge.colorFor(project.status),
               icon: Icons.view_in_ar_outlined,
             ),
@@ -178,7 +180,7 @@ class _ModelViewerScreenState extends ConsumerState<ModelViewerScreen> {
 
     final result = await ref
         .read(projectBackendControllerProvider)
-        .refreshStatus(project);
+        .downloadLatestModel(project);
 
     if (!mounted) return;
     setState(() {

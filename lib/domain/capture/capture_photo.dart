@@ -8,6 +8,9 @@ class CapturePhoto {
     this.level,
     required this.brightness,
     required this.sharpness,
+    this.width = 0,
+    this.height = 0,
+    this.warnings = const [],
     required this.accepted,
     required this.flaggedForRetake,
     required this.createdAt,
@@ -21,6 +24,9 @@ class CapturePhoto {
   final String? level;
   final double brightness;
   final double sharpness;
+  final int width;
+  final int height;
+  final List<String> warnings;
   final bool accepted;
   final bool flaggedForRetake;
   final DateTime createdAt;
@@ -38,6 +44,9 @@ class CapturePhoto {
     bool clearLevel = false,
     double? brightness,
     double? sharpness,
+    int? width,
+    int? height,
+    List<String>? warnings,
     bool? accepted,
     bool? flaggedForRetake,
     DateTime? createdAt,
@@ -51,6 +60,9 @@ class CapturePhoto {
       level: clearLevel ? null : (level ?? this.level),
       brightness: brightness ?? this.brightness,
       sharpness: sharpness ?? this.sharpness,
+      width: width ?? this.width,
+      height: height ?? this.height,
+      warnings: warnings ?? this.warnings,
       accepted: accepted ?? this.accepted,
       flaggedForRetake: flaggedForRetake ?? this.flaggedForRetake,
       createdAt: createdAt ?? this.createdAt,
@@ -67,6 +79,9 @@ class CapturePhoto {
       'level': level,
       'brightness': brightness,
       'sharpness': sharpness,
+      'width': width,
+      'height': height,
+      'warnings': warnings,
       'accepted': accepted,
       'flaggedForRetake': flaggedForRetake,
       'createdAt': createdAt.toIso8601String(),
@@ -86,6 +101,9 @@ class CapturePhoto {
       level: json['level'] as String?,
       brightness: _asDouble(json['brightness']),
       sharpness: _asDouble(json['sharpness']),
+      width: _asInt(json['width']) ?? 0,
+      height: _asInt(json['height']) ?? 0,
+      warnings: _asStringList(json['warnings']),
       accepted: json['accepted'] as bool? ?? true,
       flaggedForRetake: json['flaggedForRetake'] as bool? ?? false,
       createdAt:
@@ -105,6 +123,9 @@ class CapturePhoto {
       thumbnailPath: defaultThumbnailPath(originalPath),
       brightness: 0,
       sharpness: 0,
+      width: 0,
+      height: 0,
+      warnings: const [],
       accepted: true,
       flaggedForRetake: false,
       createdAt: createdAt,
@@ -128,5 +149,13 @@ class CapturePhoto {
     if (value is num) return value.round();
     if (value is String) return int.tryParse(value);
     return null;
+  }
+
+  static List<String> _asStringList(Object? value) {
+    if (value is! List) return const [];
+    return [
+      for (final item in value)
+        if (item is String && item.trim().isNotEmpty) item.trim(),
+    ];
   }
 }

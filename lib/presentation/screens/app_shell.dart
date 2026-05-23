@@ -4,7 +4,6 @@ import 'app_destination.dart';
 import 'capture/capture_screen.dart';
 import 'home/home_screen.dart';
 import 'models/models_screen.dart';
-import 'project_workspace_screen.dart';
 import 'projects_hub_screen.dart';
 import 'system_settings_screen.dart';
 
@@ -21,14 +20,6 @@ class _AppShellState extends State<AppShell> {
 
   int get _currentIndex => AppDestination.values.indexOf(_currentDestination);
 
-  Future<void> _openProjectDetail(String projectId) {
-    return Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => ProjectWorkspaceScreen(projectId: projectId),
-      ),
-    );
-  }
-
   void _goToTab(int index) {
     final destination = _destinations[index];
     if (destination == _currentDestination) return;
@@ -38,9 +29,9 @@ class _AppShellState extends State<AppShell> {
   @override
   Widget build(BuildContext context) {
     final tabs = <Widget>[
-      HomeScreen(onNavigateToTab: _goToTab, onOpenProject: _openProjectDetail),
+      HomeScreen(onNavigateToTab: _goToTab),
       const CaptureScreen(),
-      ProjectsHubScreen(onOpenProject: _openProjectDetail),
+      const ProjectsHubScreen(),
       const ModelsScreen(),
       const SystemSettingsScreen(),
     ];

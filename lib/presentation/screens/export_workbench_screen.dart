@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/projects/project_export_config.dart';
+import '../../domain/projects/project_capture_readiness.dart';
 import '../../domain/projects/project_model.dart';
 import '../../domain/projects/project_processing.dart';
 import '../../domain/projects/project_workflow.dart';
@@ -199,7 +200,8 @@ class _ExportWorkbenchScreenState extends ConsumerState<ExportWorkbenchScreen> {
                   onPressed: () {
                     Navigator.of(context).push(
                       MaterialPageRoute(
-                        builder: (_) => ModelViewerScreen(projectId: project.id),
+                        builder: (_) =>
+                            ModelViewerScreen(projectId: project.id),
                       ),
                     );
                   },
@@ -269,9 +271,9 @@ class _ExportWorkbenchScreenState extends ConsumerState<ExportWorkbenchScreen> {
     if (!mounted) return;
     setState(() => _processing = false);
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(result.message)),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(result.message)));
 
     if (result.success) {
       await Navigator.of(context).push(
@@ -433,6 +435,7 @@ class _FinalSummary extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final readiness = ProjectCaptureReadiness.fromProject(project);
     return AppSurfaceCard(
       title: 'Resumen final',
       subtitle: 'Validacion previa antes de generar artefactos',
@@ -446,6 +449,22 @@ class _FinalSummary extends StatelessWidget {
           _Line(label: 'Escala', value: exportConfig.scaleUnit.label),
           _Line(label: 'Destino', value: resolvedDestination),
           _Line(label: 'Perfil', value: processingConfig.profile.label),
+          _Line(label: 'Fotos', value: '${readiness.acceptedPhotos} aceptadas'),
+          _Line(
+            label: 'Angulos',
+            value:
+                'bajo ${readiness.lowAngleCount} - medio ${readiness.midAngleCount} - alto ${readiness.highAngleCount}',
+          ),
+          _Line(
+            label: 'Calidad media',
+            value:
+                'brillo ${readiness.averageBrightness.toStringAsFixed(0)} - detalle ${readiness.averageSharpness.toStringAsFixed(0)}',
+          ),
+          if (readiness.averageMegapixels > 0)
+            _Line(
+              label: 'Resolucion media',
+              value: '${readiness.averageMegapixels.toStringAsFixed(1)} MP',
+            ),
           const SizedBox(height: 8),
           Container(
             width: double.infinity,
@@ -456,9 +475,7 @@ class _FinalSummary extends StatelessWidget {
               border: Border.all(color: Colors.white12),
             ),
             child: Text(
-              project.missingRecommendedPhotos == 0
-                  ? 'Cobertura minima cumplida para procesamiento.'
-                  : 'Faltan ${project.missingRecommendedPhotos} capturas recomendadas para una cobertura completa.',
+              readiness.suggestions.take(3).join(' '),
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                 color: Colors.white70,
                 fontWeight: FontWeight.w600,

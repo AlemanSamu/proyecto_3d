@@ -6,7 +6,7 @@ extension AppDestinationX on AppDestination {
   String get label => switch (this) {
     AppDestination.home => 'Inicio',
     AppDestination.capture => 'Capturar',
-    AppDestination.projects => 'Proyectos',
+    AppDestination.projects => 'Historial',
     AppDestination.models => 'Modelos',
     AppDestination.settings => 'Ajustes',
   };
@@ -14,7 +14,7 @@ extension AppDestinationX on AppDestination {
   String get headline => switch (this) {
     AppDestination.home => 'Inicio operativo',
     AppDestination.capture => 'Captura guiada',
-    AppDestination.projects => 'Tablero de proyectos',
+    AppDestination.projects => 'Historial de escaneos',
     AppDestination.models => 'Artefactos 3D',
     AppDestination.settings => 'Ajustes del sistema',
   };

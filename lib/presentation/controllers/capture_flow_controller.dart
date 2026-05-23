@@ -138,6 +138,7 @@ class CaptureFlowController {
       );
     }
 
+    final resolution = readImageResolution(localPath);
     _projectsNotifier.addImagePath(
       projectId,
       localPath,
@@ -146,17 +147,21 @@ class CaptureFlowController {
       level: level,
       brightness: brightness ?? qualityReport?.brightness ?? 0,
       sharpness: sharpness ?? qualityReport?.sharpness ?? 0,
+      width: resolution.width,
+      height: resolution.height,
+      warnings: localWarnings ?? const [],
       accepted: accepted,
       flaggedForRetake: flaggedForRetake,
     );
 
-    final resolution = readImageResolution(localPath);
     final fileSize = readFileSizeBytes(localPath);
     final end = captureEndTime ?? DateTime.now();
     final start =
-        captureStartTime ?? end.subtract(Duration(milliseconds: captureDurationMs ?? 0));
+        captureStartTime ??
+        end.subtract(Duration(milliseconds: captureDurationMs ?? 0));
     final durationMs =
-        captureDurationMs ?? end.difference(start).inMilliseconds.clamp(0, 600000);
+        captureDurationMs ??
+        end.difference(start).inMilliseconds.clamp(0, 600000);
     await _metadataStore.appendEntry(
       projectId: projectId,
       entry: CaptureMetadataEntry(

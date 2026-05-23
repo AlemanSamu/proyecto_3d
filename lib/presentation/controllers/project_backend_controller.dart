@@ -254,6 +254,57 @@ class ProjectBackendController {
         return BackendStatusResult.success(status: status);
       }
 
+      _updateStatus(project.id, ProjectStatus.modelGenerated);
+      return BackendStatusResult.success(status: status);
+    } on BackendApiException catch (error) {
+      _updateRemoteSyncState(
+        project.id,
+        remoteErrorMessage: error.message,
+        clearRemoteStatus: false,
+        clearRemoteModelUrl: false,
+        clearRemoteErrorMessage: false,
+      );
+      return BackendStatusResult.failure(error.message);
+    } catch (_) {
+      const message = 'No se pudo consultar el estado remoto.';
+      _updateRemoteSyncState(
+        project.id,
+        remoteErrorMessage: message,
+        clearRemoteStatus: false,
+        clearRemoteModelUrl: false,
+        clearRemoteErrorMessage: false,
+      );
+      return BackendStatusResult.failure(message);
+    }
+  }
+
+  Future<BackendStatusResult> downloadLatestModel(ProjectModel project) async {
+    final remoteProjectId = project.remoteProjectId;
+    if (remoteProjectId == null || remoteProjectId.trim().isEmpty) {
+      return BackendStatusResult.failure(
+        'El proyecto no tiene id remoto asociado.',
+      );
+    }
+
+    try {
+      final status = await _apiService.fetchStatus(
+        remoteProjectId: remoteProjectId,
+      );
+
+      _updateRemoteSyncState(
+        project.id,
+        remoteStatus: status.rawStatus,
+        remoteModelUrl: status.modelUrl,
+        clearRemoteErrorMessage: true,
+        clearRemoteModelUrl: status.modelUrl == null,
+      );
+
+      if (!status.isCompleted) {
+        return BackendStatusResult.failure(
+          'El modelo aun no esta listo para descarga.',
+        );
+      }
+
       final modelPath = await _apiService.downloadModelToProject(
         remoteProjectId: remoteProjectId,
         localProjectId: project.id,

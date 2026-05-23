@@ -11,6 +11,7 @@ import '../../domain/projects/project_export_config.dart';
 import '../../domain/projects/project_processing.dart';
 import '../../domain/settings/local_server_config.dart';
 import 'backend_api_exception.dart';
+import 'backend_image_upload_preparer.dart';
 
 class LocalBackendApiPaths {
   const LocalBackendApiPaths({
@@ -236,14 +237,32 @@ class LocalBackendApiService {
     await _withNetworkRetry<void>(
       action: 'upload image',
       maxRetries: _uploadNetworkRetries,
-      operation: () => _sendSingleImageUpload(
-        remoteProjectId: remoteProjectId,
-        imagePath: imagePath,
-        filename: file.uri.pathSegments.isEmpty
-            ? 'capture.jpg'
-            : file.uri.pathSegments.last,
-      ),
+      operation: () async {
+        final prepared = await prepareBackendImageForUpload(imagePath);
+        try {
+          await _sendSingleImageUpload(
+            remoteProjectId: remoteProjectId,
+            imagePath: prepared.path,
+            filename: prepared.filename,
+          );
+        } finally {
+          if (prepared.isTemporary) {
+            unawaited(_deleteTemporaryFile(prepared.path));
+          }
+        }
+      },
     );
+  }
+
+  Future<void> _deleteTemporaryFile(String path) async {
+    try {
+      final file = File(path);
+      if (await file.exists()) {
+        await file.delete();
+      }
+    } catch (_) {
+      // Temporary upload copies are best-effort cleanup.
+    }
   }
 
   Future<void> _sendSingleImageUpload({
@@ -1122,7 +1141,7 @@ class LocalBackendApiService {
     if (normalized.isEmpty) return null;
     return switch (normalized) {
       'gltf' => 'glb',
-      'glb' || 'obj' || 'fbx' || 'usdz' => normalized,
+      'glb' || 'obj' => normalized,
       _ => normalized,
     };
   }

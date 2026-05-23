@@ -42,10 +42,12 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Captura guiada'), findsOneWidget);
-    expect(find.text('Sesion activa'), findsOneWidget);
-    await tester.scrollUntilVisible(find.text('Camara guiada'), 250);
+    expect(find.text('Proyecto'), findsOneWidget);
+    expect(find.text('Guia por anillos'), findsOneWidget);
+    expect(find.text('Bajo 10-15 | Medio 12-18 | Alto 10-15'), findsOneWidget);
+    await tester.scrollUntilVisible(find.text('Abrir captura guiada'), 250);
     await tester.pumpAndSettle();
-    expect(find.text('Camara guiada'), findsOneWidget);
+    expect(find.text('Abrir captura guiada'), findsOneWidget);
   });
 
   testWidgets('permite crear proyecto y dejarlo activo', (tester) async {
@@ -63,8 +65,7 @@ void main() {
 
     expect(find.text('Proyecto activo'), findsOneWidget);
     expect(find.textContaining('Mesa prueba'), findsWidgets);
-    expect(find.text('Borrador'), findsOneWidget);
-    expect(find.text('Comenzar captura'), findsWidgets);
+    expect(find.text('Guia por anillos'), findsOneWidget);
   });
 
   testWidgets('muestra proyecto existente y acciones principales', (
@@ -84,6 +85,6 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Proyecto activo'), findsOneWidget);
     expect(find.text('Escaneo demo'), findsOneWidget);
-    expect(find.text('Capturando'), findsOneWidget);
+    expect(find.text('Captura guiada'), findsOneWidget);
   });
 }
